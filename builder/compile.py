@@ -215,7 +215,7 @@ def compile_workflow(spec, api, briefs):
             "on_enter": {"type": "tts", "text": spec["opening_line"]}, "on_enter_first_entry_only": True,
             "task_message": identify_task,
             "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in pre_tools],
-            "max_node_turns": 40, "max_turn_transition": "hang_up",
+            "max_node_turns": 80, "max_turn_transition": "hang_up",
             "transitions": [
                 {"target_node": "load_account", "description": "identity fully verified", "condition": {"logic": "or", "conditions": _true(f"verify_identity_response.data.{flag}")}},
                 _closed_transition(),
@@ -234,7 +234,7 @@ def compile_workflow(spec, api, briefs):
             "on_enter": {"type": "llm"}, "on_enter_first_entry_only": True,
             "task_message": negotiate_task,
             "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools],
-            "max_node_turns": 60, "max_turn_transition": "hang_up",
+            "max_node_turns": 120, "max_turn_transition": "hang_up",
             # Multi-rule date, amount and per-product attempt decisions happen here.
             "reasoning_override": NEGOTIATE_REASONING,
             "transitions": [_closed_transition()],
