@@ -263,3 +263,12 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Teklifi kalan bir ürün varsa, onun tam teklif metnini "NEXT STEP: your next message makes exactly this proposal and no other" satırıyla veriyor.
   - Hiçbir üründe teklif kalmadıysa satır şöyle: "ödeme isteme, müşterinin gün verdiği ürünleri geri okuyup kaydet, teklifsiz ürünler için politikayı uygula ve kapat". Bu satır, teklif kalmadığı sürece sonraki turlarda da duruyor.
   - Müşterinin gün verdiği ürün artık "nothing refused yet" diye değil, "müşteri bir gün veya tutar verdi" diye gösteriliyor.
+- 4d4f7b2'nin build testi de 12/13 oldu (spec_vote 74/74/74, farklı alan yok). PUB-12 yine düştü: model STOP'tan sonra araç kredisine tabanı teklif etti. "NEXT STEP" satırı tek başına yetmedi; model kendi önceki mesajının kalıbını kopyalıyor.
+- Düzeltme (a729e19), kapanış düğümü `wrap_up`. Fable 5.1'e danışıldı; önerileri de içinde.
+  - Her ürün ya STOP'ta ya da müşterinin kendi gün veya tutar verdiği durumdaysa (ve en az biri STOP'taysa) `check_date`, `negotiation_done = yes` ile konuşmayı `wrap_up`'a yönlendiriyor.
+  - `wrap_up`'ta pazarlık planı, taban ve deneme adımları yok. Yalnız ürünlerin durumu (DONE satırı, rakamsız) ve en sona konan tek somut sonraki adım var: müşterinin verdiğini geri oku ve onayla, ya da teklifsiz ürünler için politikayı uygula ve kapat.
+  - Yasak cümlelerinde rakam geçmiyor ("propose no amount and no date"), çünkü model yasaklanan rakamı da kopyalıyordu.
+  - `wrap_up`, negotiate ile aynı araçları, aynı çıkarımı ve aynı geçişleri kullanıyor; yalnız görev metni farklı. Platform dry-run kabul etti, 61 test geçiyor.
+- r6, 4d4f7b2 AB × 3 (sonuçlar platformdan doğrudan okundu): PUB-12 üç tekrarda da düştü. PUB-05 üçüncü tekrarda "inconclusive", geri kalan 11 müşteri 3/3 geçti.
+  - Üçüncü tekrarın simülasyonu (0ea8137c, 23:20) bütün konuşmaları 23:22'de bitirip değerlendirdiği halde platformda 30 dakikadan uzun süre "running" kaldı. Kit koşucusu bu durumu beklemekten başka bir şey yapamıyor; aynı şey 22:46'daki simülasyonda da 23 dakika sürmüştü.
+  - Final build'i `--suite` kullanmadığı için bu takılma finali etkilemez. Ölçüm betikleri artık bir build veya kampanyadan önce çalışma alanında koşan simülasyon kalmamasını bekliyor.
