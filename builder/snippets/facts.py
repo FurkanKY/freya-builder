@@ -190,6 +190,8 @@ def run():
     bands = acc.get("bands") or []
     lines = []
     lines.append("Now: " + _label(today) + " " + now.strftime("%H:%M") + ". Today is " + ("a business day." if _is_business(today, workdays, holidays) else "NOT a business day."))
+    tomorrow = today + datetime.timedelta(days=1)
+    lines.append("Tomorrow: " + _label(tomorrow) + ", " + ("a business day." if _is_business(tomorrow, workdays, holidays) else "NOT a business day."))
     nb = _next_business(today, workdays, holidays)
     if nb:
         lines.append("Next business day after today: " + _label(nb) + ".")
