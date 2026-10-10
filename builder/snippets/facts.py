@@ -399,50 +399,84 @@ def _refused_ids(words, infos):
     return []
 
 
-NO_VALUE = set(["", "none", "nothing", "n/a", "na", "null", "nil", "no refusal", "nothing refused", "none refused", "not applicable", "no product", "no products"])
+NO_VALUE = set(["", "none", "nothing", "n/a", "na", "null", "nil", "no refusal", "nothing refused", "none refused", "not applicable",
+                "no product", "not refused", "no product refused", "none of the product refused", "yes", "ok"])
+NOT_REFUSAL = set(["accept", "accepted", "agree", "agreed", "applicable", "confirm", "confirmed"])
+BARE_NO = set(["no", "nope", "nah", "not", "never", "won", "t", "can", "cannot", "don", "do", "doesn", "refuse", "refused", "refuse",
+               "refusal", "flat", "flatly", "decline", "declined", "pay", "paying", "it", "that", "this", "i", "will", "want", "to",
+               "way", "now", "sorry", "afford", "the", "a", "offer", "proposal", "customer", "say", "said", "just"])
 
 
 def _no_value(raw):
-    """True for the extraction's 'nothing' sentinel in any spelling ('None.', 'nothing', "'none'", 'none (accepted)')."""
-    key = " ".join(re.findall(r"[a-z/]+", str(raw or "").lower()))
-    if key in NO_VALUE:
+    """True for the extraction's 'nothing refused' value in any spelling ('None.', 'nothing', 'No refusals', 'N/A (accepted)')."""
+    key = " ".join(t for t in re.findall(r"[a-z/]+", str(raw or "").lower()))
+    words = [t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t for t in key.split(" ") if t]
+    key = " ".join(words)
+    if key in NO_VALUE or set(words) & NOT_REFUSAL:
         return True
-    head = key.split(" ")
-    return head[0] in ("none", "nothing") and (len(head) < 2 or head[1] != "of")
+    if re.search(r"\b(no|not|none|nothing|never)\b\W+(\w+\W+)?refus", key):
+        return True
+    return bool(words) and words[0] in ("none", "nothing") and (len(words) < 2 or words[1] != "of")
+
+
+def _bare_no(raw):
+    """A refusal that names no product ('No.', 'I won't pay that'): it answers what the assistant just proposed."""
+    words = _tokens(raw)
+    return bool(words) and words <= BARE_NO
+
+
+def _ids(raw, infos):
+    return [] if _no_value(raw) else _refused_ids(raw, infos)
 
 
 def _count_refusals(plans):
     """Counts, per product, the refused proposals the assistant actually made, then clears the extracted words.
 
     The first ask covers every product once: a product refused in answer to it gets count 1, never more. After that a
-    refusal adds one only for the products the assistant's last message proposed, so a repeated "none of them" during
-    one product's proposal does not use up the proposals of products not offered yet. Returns (counts, changed ids).
+    refusal adds one only for the products the assistant last proposed, so a repeated "none of them" during one
+    product's proposal does not use up the proposals of products not offered yet. A product first refused after the
+    first ask starts at attempt 1, unless the customer had given it a day or an amount of their own: then that refusal
+    is its answer to the first ask. Returns (counts, changed ids).
     """
     try:
         counts = json.loads(str(vars.get("refusal_counts") or "{}"))
         counts = counts if isinstance(counts, dict) else dict()
     except Exception:
         counts = dict()
+    try:
+        own = json.loads(str(vars.get("own_offer_products") or "[]"))
+        own = own if isinstance(own, list) else []
+    except Exception:
+        own = []
     infos = [(pl[0], pl[4]) for pl in plans]
     all_ids = [pl[0] for pl in plans]
+    k_of = lambda pid: int(counts.get(pid) or 0)
+    # The first ask is open while no product has a count or a day or amount of the customer's own.
+    first_open = not any(k_of(pid) for pid in all_ids) and not own
+    for pid in _ids(str(vars.get("dated_products") or ""), infos):
+        if k_of(pid) == 0 and pid not in own:
+            own.append(pid)
     raw = str(vars.get("refused_products") or "").strip()
-    asked_raw = str(vars.get("proposed_products") or "").strip()
-    asked = [] if _no_value(asked_raw) else _refused_ids(asked_raw, infos)
+    asked = _ids(str(vars.get("proposed_products") or ""), infos)
     changed = []
     if not _no_value(raw):
         ids = _refused_ids(raw, infos)
-        if not ids:
-            # A bare "no" answers what the assistant just proposed, else the one product still being worked on.
-            open_ids = [pl[0] for pl in plans if 0 < int(counts.get(pl[0]) or 0) <= _total(pl)]
+        if not ids and _bare_no(raw):
+            open_ids = [pl[0] for pl in plans if 0 < k_of(pl[0]) <= _total(pl)]
             ids = asked or (open_ids if len(open_ids) == 1 else [])
-        first_ask = not any(int(counts.get(pid) or 0) for pid in all_ids) and (not asked or set(asked) == set(all_ids))
+        first_ask = first_open and (not asked or set(asked) == set(all_ids))
+        if not first_ask and not asked and len(ids) > 1:
+            # Not known what was proposed: a group refusal counts only for the product being worked on, in bank order.
+            working = [pid for pid in all_ids if pid in ids and 0 < k_of(pid) <= _total(plans[all_ids.index(pid)])]
+            ids = working[:1]
         for pid in ids:
-            k = int(counts.get(pid) or 0)
+            k = k_of(pid)
             if first_ask:
                 new = max(k, 1)
-            elif asked:
-                # A product proposed for the first time after the first ask is at least on attempt 1.
-                new = max(k, 1) + 1 if pid in asked else k
+            elif asked and pid not in asked:
+                new = k
+            elif k == 0:
+                new = 1 if pid in own else 2
             else:
                 new = k + 1
             if new != k:
@@ -450,6 +484,8 @@ def _count_refusals(plans):
                 changed.append(pid)
     vars["refused_products"] = "none"
     vars["proposed_products"] = "none"
+    vars["dated_products"] = "none"
+    vars["own_offer_products"] = json.dumps(own)
     vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
     return counts, changed
 
