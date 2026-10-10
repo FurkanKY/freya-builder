@@ -1,0 +1,15 @@
+{
+ "language": "English",
+ "call_variables": ["customer_id", "first_name", "last_name", "title", "now"],
+ "opening_line": "Hello, this is the digital assistant of Sample Bank, and this call is recorded. Am I speaking with {{title}} {{last_name}}?",
+ "identity": {"questions": [{"field": "date_of_birth", "ask": "Could you tell me your date of birth?", "answer_format": "YYYY-MM-DD"}, {"field": "phone_last4", "ask": "And the last four digits of your phone number?", "answer_format": "four digits"}], "complete_flag": "all_verified"},
+ "calendar": {"business_weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], "holidays": [{"date": "2026-10-26", "name": "bank holiday"}]},
+ "account": {"list_field": "products", "id_field": "product_id", "type_field": "type", "amount_field": "past_due", "segment_field": "days_late",
+   "floor_field_by_type": {"credit_card": "minimum_payment", "personal_loan": "instalment_amount", "car_loan": "instalment_amount"},
+   "spoken_name_by_type": {"credit_card": "credit card ending <card_last4>", "personal_loan": "personal loan", "car_loan": "car loan"},
+   "bands": [{"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""}, "persuasion_attempts": 1}]},
+ "outcomes": {"no_reason": ["promise", "paid"]},
+ "tool_descriptions": {"create_promise": "CALL it after a clear yes to the read-back."},
+ "tool_field_hints": {"create_promise": {"date": "YYYY-MM-DD"}},
+ "policy": {"precedence": "", "before_verification": "1. Verify identity.", "after_verification": "1. State the debt.", "closing": "promise: a promise was recorded"}
+}

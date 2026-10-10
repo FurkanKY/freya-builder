@@ -1,5 +1,6 @@
 """Deadline-aware adaptation of the official v3 Freya client (same export format)."""
 import json
+import urllib.error
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -20,8 +21,11 @@ class Client:
             return self.transport(method,path,body,params,timeout)
         query="?"+urllib.parse.urlencode(params) if params else ""
         request=urllib.request.Request(self.url+path+query,data=json.dumps(body).encode() if body is not None else None,method=method,headers={"Authorization":"Bearer "+self.key,"Content-Type":"application/json","User-Agent":"Mozilla/5.0 (build-the-builder)"})
-        with urllib.request.urlopen(request,timeout=timeout) as response:
-            result=json.load(response)
+        try:
+            with urllib.request.urlopen(request,timeout=timeout) as response:
+                result=json.load(response)
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"Freya {method} {path} -> {exc.code}: {exc.read().decode(errors='replace')[:800]}") from None
         if isinstance(result,dict) and result.get("success") is False:
             raise RuntimeError("Freya API rejected request: "+str(result.get("data",{}).get("message","unknown error"))[:500])
         return result.get("data",{}).get("result",result) if isinstance(result,dict) else result

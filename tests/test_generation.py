@@ -7,7 +7,7 @@ def test_parse_response_rejects_incomplete_output():
     with pytest.raises(ValueError):
         parse_response('{"workflow":')
     with pytest.raises(ValueError):
-        parse_response('{"workflow": {}, "coverage": []}')
+        parse_response('{"spec": {}, "coverage": []}')
 
 
 def test_prompt_preserves_raw_brief_and_new_schema(tmp_path):
@@ -23,5 +23,5 @@ def test_prompt_preserves_raw_brief_and_new_schema(tmp_path):
 
 
 def test_parse_response_accepts_fenced_json():
-    data={"workflow":{"nodes":{"a":{}},"initial_node":"a"},"rules":[{"source":"memo.md:1","rule":"sample"}],"coverage":[{"rule":0,"location":"nodes.a"}]}
+    data={"spec":{"language":"English"},"rules":[{"source":"memo.md:1","rule":"sample"}],"coverage":[{"rule":0,"location":"policy"}]}
     assert parse_response('```json\n'+json.dumps(data)+'\n```') == data
