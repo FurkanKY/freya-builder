@@ -84,3 +84,12 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Band başına `attempt_plan` (spec): facts.py ürün başına somut tutar/tarihle "persuasion plan" satırı yazar.
   - negotiate düğümünde "kısa düşün" talimatı (BRIEF_THINKING).
   - Açılış cümlesinde sonraki olaylara ayrılmış kelime kullanılmaz (farklı kelime biçimi).
+
+## Aşama 6 — Düzeltmelerle yeniden ölçüm
+- Build 20261010T130616-750120Z (commit 03a8c2f): AB 12/13, reasoning hatası 0. PUB-12: üçüncü üründe "today" tekrar soruldu → plan satırı "tam teklif listesi" olarak işaretlendi.
+- Build 20261010T131211-173701Z (commit 2b52bbd, `--repair`): **AB 13/13** (repair atlandı: hepsi geçti). Toplam build ~300 sn.
+  - AB × 3 tekrar: turlar 13, 13, 12 → katı 12/13 (PUB-03 bir kez: tam tarih "Go on" ile parça sanıldı → "her parçası olan cevap tamamdır" kuralı, bb47e00).
+  - pieces: 12/13 (PUB-12: transkriptte 2+1 deneme doğru; hakem açılış sorusunu da saydı — hakem gürültüsü).
+  - talkative: 8/13 (önce 4/13). Kalan: reasoning kesilmesi (9 hata, 4 kapanmayan çağrı) ve identify'da 40 tur sınırı → sınırlar 80/120 (10a5da0).
+- Genelleme fixture'ı (Northwind, yeniden adlandırılmış API): spec doğru, attempt_plan bant başına doğru üretildi; ilk çıktıdaki now_variable hatası tek düzeltme çağrısıyla giderildi; dryRun geçerli.
+- 13:40–13:55 UTC arası staging'de ajan LLM kesintisi: tüm çağrılar açılıştan sonra sessiz, `customer-ended-call` (0/13). Bu aralıktaki reasoning enabled/disabled karşılaştırması geçersiz; kesinti bitince tekrarlanacak.
