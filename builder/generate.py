@@ -40,7 +40,7 @@ SCHEMA = """Return exactly this shape:
   "account": {
     "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
     "amount_field": "<field with the amount owed now>", "segment_field": "<product field that selects the band, e.g. days late>",
-    "floor_field_by_type": {"<product type>": "<field that is the minimum acceptable amount>"},
+    "floor_field_by_type": {"<product type>": "<the minimum acceptable amount as the brief states it: a product field name, 'N%' of the amount owed, 'N% of <field>', or a fixed number>"},
     "spoken_name_by_type": {"<product type>": "<how to name it aloud; insert product fields as <field_name>>"},
     "bands": [{"name": "...", "min": <number>, "max": <number>,
                "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
@@ -169,8 +169,10 @@ def validate_spec(spec, api):
                 issues.append(f"account.{key} {acc.get(key)} is not a product field")
         kinds = fields.get(acc.get("type_field"), {}).get("enum") if fields else None
         for kind, field in (acc.get("floor_field_by_type") or {}).items():
-            if fields and field not in fields:
-                issues.append(f"floor field {field} for {kind} is not a product field")
+            percent = re.match(r"^\s*\d+(?:\.\d+)?\s*%(?:\s*of\s*(\w+))?\s*$", str(field))
+            fixed = isinstance(field, (int, float)) or re.match(r"^\s*\d+(?:\.\d+)?\s*$", str(field))
+            if fields and not fixed and (percent and percent.group(1) and percent.group(1) not in fields or not percent and field not in fields):
+                issues.append(f"floor {field} for {kind} is not a product field, 'N%', 'N% of <product field>' or a number")
             if kinds and kind not in kinds:
                 issues.append(f"floor_field_by_type key {kind} is not a product type {kinds}")
         for kind in (acc.get("spoken_name_by_type") or {}):

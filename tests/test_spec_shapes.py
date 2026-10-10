@@ -102,3 +102,26 @@ def test_clock_variable_is_added_only_when_no_call_variable_holds_the_time():
     assert "now" in normalize_spec(spec, API)["call_variables"]
     spec["call_variables"] = ["first_name", "call_time"]
     assert "now" not in normalize_spec(spec, API)["call_variables"]
+
+
+def _facts(spec, products):
+    wf = compile_workflow(spec, API, BRIEFS)
+    code = wf["nodes"]["account_facts"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    variables = {"now": "2026-10-21T09:00", "account_products": json.dumps(products)}
+    exec(compile(code, "facts", "exec"), {"vars": variables})
+    return variables["account_facts"]
+
+
+def test_floor_can_be_a_percentage_a_fixed_amount_or_a_field():
+    product = {"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 2125.1, "days_late": 4, "minimum_payment": 90.0}
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["floor_field_by_type"] = {"credit_card": "25%"}
+    assert "floor (25% of past_due) 531.28" in _facts(spec, [product])
+    assert validate_spec(spec, API) == []
+    spec["account"]["floor_field_by_type"] = {"credit_card": 50}
+    assert "floor (fixed amount) 50" in _facts(spec, [product])
+    assert validate_spec(spec, API) == []
+    spec["account"]["floor_field_by_type"] = {"credit_card": "minimum_payment"}
+    assert "floor (minimum_payment) 90" in _facts(spec, [product])
+    spec["account"]["floor_field_by_type"] = {"credit_card": "10% of nonsense"}
+    assert any("floor" in i for i in validate_spec(spec, API))

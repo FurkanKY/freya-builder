@@ -79,7 +79,7 @@ def _by_type(value, types):
     """A per-type mapping given as one string applies to every product type."""
     if isinstance(value, dict):
         return {str(k): v for k, v in value.items()}
-    if isinstance(value, str) and value:
+    if (isinstance(value, str) and value) or (isinstance(value, (int, float)) and not isinstance(value, bool)):
         return {t: value for t in types} or {"*": value}
     return {}
 

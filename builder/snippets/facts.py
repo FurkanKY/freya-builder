@@ -145,6 +145,32 @@ def _num(value):
         return None
 
 
+def _floor_of(product, rule, amount_field):
+    """The lowest acceptable amount: a product field, 'N%' or 'N% of <field>' (rounded up to the cent), or a fixed number."""
+    if rule is None or rule == "":
+        return None, None
+    if isinstance(rule, (int, float)) and not isinstance(rule, bool):
+        return "fixed amount", float(rule)
+    text = str(rule).strip()
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*%(?:\s*of\s*(\w+))?$", text)
+    if m:
+        base = _num(product.get(m.group(2) or amount_field))
+        if base is None:
+            return text, None
+        label = text if m.group(2) else text + " of " + amount_field
+        return label, _ceil_cents(base * float(m.group(1)) / 100.0)
+    if text not in product and _num(text) is not None:
+        return "fixed amount", _num(text)
+    return text, product.get(text)
+
+
+def _ceil_cents(value):
+    cents = int(value * 100)
+    if cents < value * 100 - 1e-6:
+        cents += 1
+    return cents / 100.0
+
+
 def _money(value):
     v = _num(value)
     if v is None:
@@ -234,8 +260,7 @@ def run():
             if seg_value is not None and (lo is None or seg_value >= lo) and (hi is None or seg_value <= hi):
                 band = b
                 break
-        floor_field = _for_type(floors, kind)
-        floor = p.get(floor_field) if floor_field else None
+        floor_field, floor = _floor_of(p, _for_type(floors, kind), amount_field)
         dl = band.get("_deadline") if band else None
         product_deadlines.append(dl)
         text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(_for_type(names, kind), p)
