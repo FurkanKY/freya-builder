@@ -299,3 +299,10 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Sayaç değiştiğinde plan, sıradaki tek teklifi "NEXT STEP: your next message makes exactly this proposal and no other" satırıyla veriyor. Önünde hiç sorulmamış ürün varsa ya da gün verilmiş ama tarihli ürün yoksa bu satır yazılmıyor.
 - Builder modeli `claude-sonnet-5`'e sabitlendi: `build.py` varsayılanı, `.env.example`, README ve FINAL.md'de bir kontrol satırı. `.env` de aynı değere çekildi.
   - 7074252'nin bu modelle build'i (sürüm 23) spec_vote 74/74/74 verdi, farklı alan yok. Üç okumanın üçü de add_note'u "Brief B only" diye yazdı.
+- 7074252, sürüm 23 (spec `claude-sonnet-5` ile okundu), AB × 3 ve 5 varyant × 3 sohbet ölçümü, Pazar 02:00 civarı:
+  - AB'nin ilk tekrarında 13 vakanın 13'ü geçti; PUB-05 ve PUB-08 de geçti, yani gereksiz not sorunu modelle birlikte gitti.
+  - Pazar 02:05 civarında platform 503/504 vermeye başladı: r2'nin yarısı ve r3'ün tamamı konuşmanın ortasında ya da hiç başlamadan kesildi. Bunlar ajanla ilgili değil.
+  - Kesilmeyen tek başarısız koşu PUB-04 r2. Müşteriyi oynayan model önce 23 Ekim'i kabul edip sonra "tamamını ancak 6 Kasım'da" diye çelişti; ajan da tek ürünlü vakada add_note çağırdı. İzleniyor.
+  - Varyant PUB-11 r2'de gerçek bir hata vardı: "kartı ve krediyi ödemem, araç kredisini konuşabiliriz" cevabından sonra araç kredisi için "bugün" yeniden soruldu.
+- Düzeltme (01729a7): ilk cevabın açık bıraktığı ürün sayılmıyor, çünkü cevabı müşterinin kendi verdiği bir gün olabilir. Ama satırı "ilk soru onu da kapsadı, tekrar sorma; müşteri gün ya da tutar vermezse sıradaki teklif 1. deneme: …" diyor.
+- `scripts/chat_cases.py` artık platform hatasıyla kapanmadan kesilen koşuları INFRA diye işaretliyor, bir dakika sonra yeniden koşturuyor (`--infra-retries 2`) ve puana katmıyor.
