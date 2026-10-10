@@ -103,3 +103,11 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - Genelleme fixture'ından çıkan hatalar düzeltildi: tool ipuçları path ile anahtarlanınca kayboluyordu (2ab1f1e), fact etiketleri API alan adlarını kullanıyor, kapalı günde önceki iş günü de yazılıyor, iç içe ürün listesi yolu destekleniyor, uydurma persuasion adımı yasak.
 - Build dayanıklılığı: bozuk/zaman aşımlı model çıktısı bir kez yeniden denenir; düzeltme sonrası hâlâ geçersiz spec build'i düşürmez, en az hatalı spec derlenir (bb2cc30); Freya 5xx/429/ağ hataları iki kez yeniden denenir (dc0f3f2).
 - Teslim: `trace.txt` (düz metin iz) ve `python -m builder.submit <run_id> <ad>` (hash doğrulamalı export+trace kopyası, 31be6ec). README'de final prosedürü.
+
+## Aşama 8 — Review düzeltmeleri, genelleme, 3 tekrar
+- Kod incelemesi bulguları (aae3e4c): `builder/spec.py` model spec'indeki tip sapmalarını (liste/sözlük/string) normalize eder; `$ref` gövdeleri çözülür; hook'lar bankanın kendi `ok`/`success`/hata alanını ve noktalı `complete_flag`/`answer_flag` yollarını okur; HTTP metodu API'den gelir; kimlik cevabı olan alanlar çağrı değişkeni diye gömülmez. 40 test.
+- Genelleme fixture'ı yeni kodla: validated, 98 sn. Brief saat değişkeni adı vermeyince model `now`u call_variables'a eklemiyordu → tarih/saat benzeri değişken yoksa normalize ekler (9113478); ilk spec düzeltme çağrısı olmadan geçerli.
+- Build 20261010T143024-909190Z, AB × 3 tekrar: katı 5/13; ama 39 çağrının 15 kaybından 14'ü snekbox kesintisi. Altyapısız 25 çağrının 24'ü geçti. Tek gerçek kayıp PUB-12: üç ürüne bölünmüş cevapta iki ardışık reasoning kesilmesi (3.0k/3.3k karakter, platform bir kez yeniden denedi) → müşteri kapattı.
+- Düzeltme (8eecfec): negotiate'te "her cevapta bir adım" (çok ürünlü cevapta yalnız ilk eylem gereken ürün) ve DATE FACTS'e "Tomorrow" satırı.
+- Karar: yazma tool'larından hook kaldırma A/B'si yapılmadı; snekbox düşünce account_facts code node'u da düştüğü için kazanç yok.
+- Sır taraması: git geçmişi ve izlenen dosyalarda .env değeri yok; .env ignore'da.
