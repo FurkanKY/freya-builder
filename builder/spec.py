@@ -105,6 +105,11 @@ def normalize_spec(spec, api):
     for key in ("language", "now_variable", "opening_line"):
         if spec.get(key) is not None and not isinstance(spec[key], str):
             spec[key] = _text(spec[key])
+    now = spec.get("now_variable")
+    if isinstance(now, str) and now and now not in spec["call_variables"] and \
+            not any(re.search(r"now|date|time|today|clock", v, re.I) for v in spec["call_variables"]):
+        # Raw material often says only "today"; the clock variable then has to be added, not guessed twice.
+        spec["call_variables"].append(now)
     call_vars = set(spec["call_variables"])
     if spec.get("opening_line"):
         # A brief's single-brace {first_name} would otherwise be spoken literally.

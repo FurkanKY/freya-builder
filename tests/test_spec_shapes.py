@@ -94,3 +94,11 @@ def test_normalise_is_idempotent_and_keeps_single_brace_names_speakable():
     once = normalize_spec(spec, API)
     assert "{{first_name}}" in once["opening_line"]
     assert normalize_spec(once, API) == once
+
+
+def test_clock_variable_is_added_only_when_no_call_variable_holds_the_time():
+    spec = json.loads(json.dumps(SPEC))
+    spec["call_variables"], spec["now_variable"] = ["first_name", "customer_id"], "now"
+    assert "now" in normalize_spec(spec, API)["call_variables"]
+    spec["call_variables"] = ["first_name", "call_time"]
+    assert "now" not in normalize_spec(spec, API)["call_variables"]
