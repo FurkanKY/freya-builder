@@ -495,27 +495,42 @@ def _total(plan):
     return len(steps) if steps else (allowed if allowed is not None else 99)
 
 
-def _plan_state(plans, counts, changed=()):
+def _plan_state(plans, counts, changed=(), own=()):
     lines = []
     now = []
+    pending, unasked, stopped, offered = [], [], [], []
     for pid, label, steps, allowed, _, floor in plans:
         k = int(counts.get(pid) or 0)
         text = pid + " " + label + ": refused " + str(k) + (" time" if k == 1 else " times")
         total = len(steps) if steps else allowed
-        if k == 0:
+        if k == 0 and pid in own:
+            offered.append(pid + " " + label)
+            text += "; the customer gave a day or an amount for it: handle that under the date and amount rules; its plan starts only if the customer then refuses"
+        elif k == 0:
+            unasked.append(pid)
             text += "; nothing refused yet"
         elif total is not None and k > total:
-            text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + " and apply the policy for a product without a promise"
+            stopped.append(pid)
+            text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + ", not its floor and not another date, and apply the policy for a product without a promise"
             if pid in changed:
                 # Seen live: after the last allowed full-amount proposal the model still offered the floor.
                 now.append("The customer has just refused the last proposal allowed for " + pid + " " + label + ". It is done: do not offer it anything"
-                           " more, not " + ("its floor " + floor + ", not " if floor else "") + "a smaller amount and not another date. Apply the policy"
-                           " for a product without a promise and go on with the next product that still has a proposal left, or with the closing.")
+                           " more, not " + ("its floor " + floor + ", not " if floor else "") + "a smaller amount and not another date.")
         elif steps:
+            pending.append(pid + " " + label + ": attempt " + str(k) + ": " + steps[k - 1])
             text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
         else:
+            pending.append(pid + " " + label + ": persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says")
             text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
         lines.append(text + ".")
+    # Seen live: told only what not to do, the model filled the gap with an offer of its own. Name the next step.
+    if now and pending:
+        now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + pending[0] + ".")
+    elif stopped and not pending and not unasked:
+        now.append("NEXT STEP: no product has a proposal left. Your next message asks the customer to pay nothing."
+                   + (" Settle what the customer offered for " + " and ".join(offered) + ": read it back and record it when the rules allow it, unless its promise is already recorded."
+                      if offered else "") + " Then follow the policy for the products without a promise and close the call."
+                   " If the customer offers a day or an amount of their own, handle it under the date and amount rules.")
     return ("\n".join(now) + ("\n" if now else "")
             + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
             " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
@@ -638,8 +653,9 @@ def run():
     _named_day(today, workdays, holidays, deadlines)
     count = len(rows)
     counts, changed = _count_refusals(plans)
+    own = json.loads(vars.get("own_offer_products") or "[]")
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts, changed) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    vars["plan_state"] = _plan_state(plans, counts, changed, own) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
     known = [(name, dl) for name, dl in deadlines if not name.startswith("band ")]
     if len(known) > 1 and len(set(dl for _, dl in known)) > 1:
         # One date named for several products is the multi-product case that needs the most date arithmetic.

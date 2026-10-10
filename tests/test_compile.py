@@ -359,3 +359,41 @@ def test_named_closed_day_carries_the_policy_action_only_within_the_deadline():
     assert "AFTER the deadline of p1" in out["named_day_facts"] and "policy says" not in out["named_day_facts"]
     out = run_facts(wf, dict(base, named_day_words="Tuesday the 27th"))
     assert "policy says" not in out["named_day_facts"]
+
+
+def test_stop_names_the_next_step():
+    # PUB-12 as seen live: card for tomorrow, loans refused; after the car loan's STOP the model offered its floor.
+    spec = json.loads(json.dumps(SPEC))
+    step1 = "attempt 1: propose <last_business_day_this_week> for <amount>"
+    spec["account"]["bands"] = [
+        {"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""},
+         "persuasion_attempts": 1, "attempt_plan": [step1]},
+        {"name": "late", "min": 11, "max": 45, "deadline": {"type": "business_days_after_today", "count": 7, "date": ""},
+         "persuasion_attempts": 2, "attempt_plan": [step1, "attempt 2: propose <floor> on <deadline>"]}]
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
+                {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
+                {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
+    out = run_facts(wf, dict(base, named_day_words="tomorrow", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
+    assert "p1 credit card ending 9015: refused 0 times; the customer gave a day or an amount for it" in out["plan_state"]
+    assert "NEXT STEP" not in out["plan_state"]
+    out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    assert json.loads(out["refusal_counts"]) == {"p2": 3, "p3": 1}
+    # The personal loan is done and the car loan still has its attempt 1: that proposal is named.
+    first = out["plan_state"].splitlines()
+    assert first[0].startswith("The customer has just refused the last proposal allowed for p2 personal loan.")
+    assert first[1].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p3 car loan: attempt 1: propose")
+    out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan"))
+    assert json.loads(out["refusal_counts"]) == {"p2": 3, "p3": 2}
+    first = out["plan_state"].splitlines()
+    assert first[0].startswith("The customer has just refused the last proposal allowed for p3 car loan.")
+    assert first[1].startswith("NEXT STEP: no product has a proposal left. Your next message asks the customer to pay nothing."
+                               " Settle what the customer offered for p1 credit card ending 9015")
+    # The step stays while nothing is left to propose, also on a later turn that names a day.
+    out = run_facts(wf, dict(out, named_day_words="Thursday"))
+    assert out["plan_state"].startswith("NEXT STEP: no product has a proposal left.")
+    # A product nobody has answered for yet is not done: no closing step then.
+    out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p2": 2}), refused_products="personal loan", proposed_products="personal loan"))
+    assert "NEXT STEP" not in out["plan_state"] and "STOP" in out["plan_state"]
