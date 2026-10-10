@@ -158,6 +158,9 @@ def normalize_spec(spec, api):
                 pass
         if not isinstance(band.get("deadline"), dict):
             band["deadline"] = {"type": "none", "count": 0, "date": ""}
+        kind = str(band["deadline"].get("type") or "").lower()
+        if "month" in kind:
+            band["deadline"]["type"] = "last_business_day_of_month" if re.search(r"business|working|work_day|workday", kind) else "end_of_month"
         plan = band.get("attempt_plan")
         band["attempt_plan"] = [_text(p) for p in plan] if isinstance(plan, list) else ([plan] if isinstance(plan, str) and plan else [])
         bands.append(band)

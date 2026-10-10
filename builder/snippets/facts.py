@@ -107,9 +107,13 @@ def _deadline(rule, today, workdays, holidays):
             return datetime.date.fromisoformat(str(rule.get("date"))[:10])
         except Exception:
             return None
-    if kind == "end_of_month":
+    if kind in ("end_of_month", "last_business_day_of_month"):
         first = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-        return first - datetime.timedelta(days=1)
+        last = first - datetime.timedelta(days=1)
+        if kind == "last_business_day_of_month":
+            while not _is_business(last, workdays, holidays) and last > today:
+                last = last - datetime.timedelta(days=1)
+        return last
     return None
 
 

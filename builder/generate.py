@@ -45,7 +45,7 @@ SCHEMA = """Return exactly this shape:
     "floor_field_by_type": {"<product type>": "<the minimum acceptable amount as the brief states it: a product field name, 'N%' of the amount owed, 'N% of <field>', or a fixed number>"},
     "spoken_name_by_type": {"<product type>": "<how to name it aloud, the name only: the product kind plus an identifying product field if the API has one (e.g. last digits), inserted as <field_name>; never an amount or other values>"},
     "bands": [{"name": "...", "min": <number>, "max": <number>,
-               "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
+               "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month (the last calendar day) | last_business_day_of_month | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
                "persuasion_attempts": <n>,
                "attempt_plan": ["<one entry per payment proposal the agent makes for a product in this band after the first ask, in order, e.g. 'attempt 1: <amount> by <last_business_day_this_week>'; tokens: <amount> <floor> <deadline> <next_business_day> <last_business_day_this_week> <last_business_day_next_week>; add the brief's conditions in words>"]}]
   },

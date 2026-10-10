@@ -1,3 +1,4 @@
+import datetime
 import json
 from pathlib import Path
 from builder.compile import compile_workflow
@@ -176,3 +177,19 @@ def test_closed_day_rule_is_normalized_to_a_known_action():
         spec = json.loads(json.dumps(SPEC))
         spec["calendar"]["closed_day_rule"] = raw
         assert normalize_spec(spec, API)["calendar"]["closed_day_rule"] == want
+
+
+def test_last_working_day_of_the_month_is_a_business_day():
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["bands"][0]["deadline"] = {"type": "last_working_day_of_month", "count": 0, "date": ""}
+    assert normalize_spec(spec, API)["account"]["bands"][0]["deadline"]["type"] == "last_business_day_of_month"
+    wf = compile_workflow(spec, API, BRIEFS)
+    code = wf["nodes"]["prepare"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    scope = {"vars": {"now": "2026-10-14T11:00"}}
+    exec(compile(code, "facts", "exec"), scope)
+    today, rule = datetime.date(2026, 10, 14), {"type": "last_business_day_of_month"}
+    # 31 October 2026 is a Saturday: a working day only when the bank works on Saturdays.
+    assert scope["_deadline"](rule, today, set(range(5)), {}) == datetime.date(2026, 10, 30)
+    assert scope["_deadline"](rule, today, set(range(6)), {}) == datetime.date(2026, 10, 31)
+    assert scope["_deadline"](rule, today, set(range(5)), {"2026-10-30": "x"}) == datetime.date(2026, 10, 29)
+    assert scope["_deadline"]({"type": "end_of_month"}, today, set(range(5)), {}) == datetime.date(2026, 10, 31)
