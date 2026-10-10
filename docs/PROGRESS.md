@@ -122,3 +122,12 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Sonnet vs Opus (genx): ikisi de memo override'ı (7 gün) yakaladı; Opus 92 sn, Sonnet 43 sn; kimlik bayraklarını ters eşlediler (fixture'da alan açıklaması yok). Karar: Sonnet kalır; şemaya bayrak adlandırma ipucu (f7611ab).
   - Asgari tutar artık alan, yüzde ("20% of overdue", kuruşa yukarı) veya sabit tutar olabilir (3bc1a2c).
   - Yeni fixture tests/fixtures/geny (Kestrel: client_ref, call_time, data.products, Pazartesi–Cumartesi, ay sonu son tarihi, %20 kart asgarisi, gerekçeli sonuç tablosu): Sonnet spec'i 14/14 kontrol doğru; derlenen ajan yerel doğrulamadan geçti, hesaplanan son tarihler doğru (7d8e2c4).
+  - Görülmemiş API sağlamlığı (fe6116a): kimlik tamamlanma bayrağı boolean değilse durum değeri (complete_value) ile eşleşir; cevap bayrağı yoksa nötr hook mesajı; daha fazla saat biçimi; araç adı path yoksa operationId'den bulunur.
+
+## Aşama 10 — 6b67cef 3 tekrar teşhisi
+- Build 20261010T154920-505698Z (6b67cef), AB × 3, altyapı kesintisi yok: build testi 12/13, katı 10/13. Kayıplar:
+  - PUB-13 2/3 ve PUB-12'nin 1 çağrısı: çok ürünlü cevaptan sonra düşünme kesilmesi. PUB-12'de müşterinin grup cevabından sonra 60 sn sessizlik oldu, müşteri kapattı; olay kaydında hata yok.
+  - PUB-12'nin diğer 2 çağrısı:
+    - Araç kredisine (erken bant, tek deneme) "bugün" yeniden soruldu ve bu deneme sayıldı → iki deneme oldu. ec1145c'deki grup ret kuralı bunu hedefliyor; bu build onu içermiyordu.
+    - `add_note`, `add_note` ve `close_call` aynı turda paralel gönderildi. Platform bunları eş zamanlı çalıştırıyor (close notlardan 140–300 ms sonra başladı); bir çağrıda kapanış önce düştü ve son not "the call is already closed" aldı. Düzeltme (d020451): close_call ön kancası 1,5 sn bekliyor.
+  - PUB-05 1/3: tek ürünlü Brief A çağrısında `add_note` hardship. Sebep, A+B'nin tek ajanda birleştirilmesi: "Brief A never uses add_note" ile Brief B'nin kuralı çatışıyor. Finalde her brief ayrı derleniyor, bu yüzden düzeltilmedi.
