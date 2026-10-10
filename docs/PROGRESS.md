@@ -59,3 +59,11 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - Genelleme fixture'ı (tests/fixtures/genx: ham materyal + memo override + yeniden adlandırılmış API): spec 46 sn, doğru alanlar/öncelik, local + dryRun temiz.
 - Repair kanıtı artık kısa transkript özeti (evaluate.transcript_digest).
 - AB suite: A+B ajanı 13 public vakanın hepsiyle test edilir.
+
+## Aşama 4 — Tekrar ölçümü (reasoning açık, run 20261010T123047-192923Z ajanı)
+- Hard 5 vaka tek tur: 4/5 (PUB-07 ve PUB-12 düzeldi; PUB-06'yı katı hakem "teklif iki kez" diye düşürdü).
+- **AB 13 vaka × 3 tekrar (final kuralı: 3/3): 12/13.** Turlar 13/13, 13/13, 12/13. Tek kayıp: PUB-12 3. tur (ajan "I've noted that" dedi, kredi kartına geri döndü, müşteri kapattı).
+- Tur medyanı 3 sn, en kötü 9 sn; reasoning gecikmesi kabul edilebilir.
+- Düzeltme (frame): tool ok:true dönmeden "noted/recorded/booked" denmez; daha önce yapılmış teklife geri atıf yapılır, tekrarlanmaz.
+- Ölçüm aracı: `python -m builder.campaign <run_id> --suite AB --reps 3 [--style X]` (build bütçesi dışı).
+- Sırada: 5 konuşma stiliyle 13 vaka (çalışıyor), sonra temiz uçtan uca prova (--repair dahil).
