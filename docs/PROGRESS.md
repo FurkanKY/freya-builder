@@ -67,3 +67,20 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - Düzeltme (frame): tool ok:true dönmeden "noted/recorded/booked" denmez; daha önce yapılmış teklife geri atıf yapılır, tekrarlanmaz.
 - Ölçüm aracı: `python -m builder.campaign <run_id> --suite AB --reps 3 [--style X]` (build bütçesi dışı).
 - Sırada: 5 konuşma stiliyle 13 vaka (çalışıyor), sonra temiz uçtan uca prova (--repair dahil).
+
+## Aşama 5 — Konuşma stilleri (aynı ajan, AB × 1 tur)
+| Stil | Sonuç | Kök neden |
+|---|---|---|
+| pieces | 11/13 | Parçalı cevaba tam cevap gibi tepki: "20" tutar sanıldı (PUB-04), fazladan teklif (PUB-12) |
+| corrects | 12/13 | Hakem açılıştaki "This call is recorded"ı erken "recorded" saydı (PUB-10) |
+| talkative | 4/13 | Simüle müşteri mesajları kesik/yalnız sohbet; ajan bunları ret/cevapsızlık saydı |
+| asks_back | 12/13 | 3 haneli telefon cevabı tool'a gitti; sonra ajan sustu (PUB-13) |
+| in_words | 12/13 | PUB-13 kapanmadı (aynı susma) |
+- **Yeni bulgu:** reasoning açıkken experimental-5 ~3.1–3.7 bin karakter düşünüp `finish_reason: length` ile "no speakable content" veriyor. 65 çağrıda 13 kez; iki kez üst üste olunca müşteri kapatıyor. Platformda token/efor ayarı yok.
+- Genel düzeltmeler (frame/derleyici, brief'e özgü değil):
+  - Kesik/eksik mesaj ve yalnız sohbet = henüz cevap değil → "Go on." / soruyu tekrar sor; ret sayılmaz (3 kez üst üste ise cevapsızlık).
+  - Eksik cevap (az hane, eksik tarih) tool'a gönderilmez.
+  - Her ödeme sorusu bir teklif; politikada olmayan ara teklif eklenmez.
+  - Band başına `attempt_plan` (spec): facts.py ürün başına somut tutar/tarihle "persuasion plan" satırı yazar.
+  - negotiate düğümünde "kısa düşün" talimatı (BRIEF_THINKING).
+  - Açılış cümlesinde sonraki olaylara ayrılmış kelime kullanılmaz (farklı kelime biçimi).
