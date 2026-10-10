@@ -111,3 +111,14 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - Düzeltme (8eecfec): negotiate'te "her cevapta bir adım" (çok ürünlü cevapta yalnız ilk eylem gereken ürün) ve DATE FACTS'e "Tomorrow" satırı.
 - Karar: yazma tool'larından hook kaldırma A/B'si yapılmadı; snekbox düşünce account_facts code node'u da düştüğü için kazanç yok.
 - Sır taraması: git geçmişi ve izlenen dosyalarda .env değeri yok; .env ignore'da.
+
+## Aşama 9 — Düşünme kesilmesi denemeleri, altyapı kesintileri, yeni fixture
+- Build 20261010T145802-060231Z (8eecfec, "her cevapta tek adım" + Tomorrow satırı), AB × 3, altyapı kesintisi yok: katı 11/13. Kayıpların hepsi çok ürünlü cevapta iki ardışık reasoning kesilmesi (PUB-13 3/3, PUB-11 1/3).
+- 354e8b4 (sabit tek satırlık düşünme biçimi): build testi 11/13, AB tur 1: 10/13; PUB-13 kesilme, PUB-05 gereksiz hardship notu, PUB-12 fazladan deneme → kötü.
+- Karşılaştırma: 8eecfec öncesi PUB-13 3/3 geçiyordu (kesilme en fazla 1 kez). İki düşünme talimatı da geri alındı (8b5ea9e); Tomorrow satırı kaldı.
+- Kesintiler: yerel DNS hatası (kit sorgusu), practice bank Worker çökmesi (Cloudflare 1101; tüm /v1 yolları, ajan araçları dahil, ~15:35–15:49 UTC). Organizatör duyurusu: "API and code execution errors are fixed".
+- Düzeltmeler: daha önce yapılmış teklif sorulunca tek cümle cevap, yeniden teklif yok (6b67cef, PUB-06); grup halinde ret ("the loans") her ürünün ilk sorusuna cevap sayılır (ec1145c, PUB-12).
+- Genelleme:
+  - Sonnet vs Opus (genx): ikisi de memo override'ı (7 gün) yakaladı; Opus 92 sn, Sonnet 43 sn; kimlik bayraklarını ters eşlediler (fixture'da alan açıklaması yok). Karar: Sonnet kalır; şemaya bayrak adlandırma ipucu (f7611ab).
+  - Asgari tutar artık alan, yüzde ("20% of overdue", kuruşa yukarı) veya sabit tutar olabilir (3bc1a2c).
+  - Yeni fixture tests/fixtures/geny (Kestrel: client_ref, call_time, data.products, Pazartesi–Cumartesi, ay sonu son tarihi, %20 kart asgarisi, gerekçeli sonuç tablosu): Sonnet spec'i 14/14 kontrol doğru; derlenen ajan yerel doğrulamadan geçti, hesaplanan son tarihler doğru (7d8e2c4).
