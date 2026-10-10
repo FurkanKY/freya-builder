@@ -57,6 +57,7 @@ SCHEMA = """Return exactly this shape:
  }
 }
 Rules for the spec:
+- Key tool_descriptions and tool_field_hints by tool name (the last path segment, e.g. close_call), not by path.
 - Use exact enum values, field names and product types from the tool API. Use the brief's own numbers.
 - A deadline counts business days strictly after today unless the brief says otherwise; use type none and describe it in policy if no type fits.
 - The checklists must keep every condition, count, exact sentence the agent must say, and exception. Be concise but lose nothing.

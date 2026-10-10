@@ -56,7 +56,7 @@ def test_facts_compute_deadline_from_spec_and_skip_holiday():
     # 5 business days after Wed 21 Oct, skipping the weekend and the 26 Oct holiday: 22, 23, 27, 28, 29.
     assert "deadline 2026-10-29" in out["account_facts"]
     assert "credit card ending 1234" in out["account_facts"]
-    assert "2026-10-26 Monday: HOLIDAY (bank holiday), NOT a business day; next business day 2026-10-27 Tuesday; on or before the deadline of p1" in out["date_facts"]
+    assert "2026-10-26 Monday: HOLIDAY (bank holiday), NOT a business day; previous business day 2026-10-23 Friday; next business day 2026-10-27 Tuesday; on or before the deadline of p1" in out["date_facts"]
     assert out["facts_state"] == "ready"
 
 
@@ -92,3 +92,13 @@ def test_facts_render_attempt_plan_per_product():
     out = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products)})
     assert "attempt 1: 300 by 2026-10-23 (Friday" in out["account_facts"]
     assert "attempt 2: 90 on 2026-10-29 (Thursday" in out["account_facts"]
+
+
+def test_tool_keys_given_as_api_paths_still_reach_the_tools():
+    spec = json.loads(json.dumps(SPEC))
+    spec["tool_descriptions"] = {"/v1/create_promise": "Call after a clear yes."}
+    spec["tool_field_hints"] = {"/create_promise": {"date": "a business day"}}
+    wf = compile_workflow(spec, API, BRIEFS)
+    tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "create_promise")
+    assert tool["function"]["description"] == "Call after a clear yes."
+    assert tool["function"]["parameters"]["properties"]["body"]["properties"]["date"]["description"].startswith("a business day")

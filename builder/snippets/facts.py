@@ -52,6 +52,15 @@ def _next_business(day, workdays, holidays, include=False):
     return None
 
 
+def _previous_business(day, workdays, holidays):
+    d = day - datetime.timedelta(days=1)
+    for _ in range(400):
+        if _is_business(d, workdays, holidays):
+            return d
+        d = d - datetime.timedelta(days=1)
+    return None
+
+
 def _nth_business_after(day, n, workdays, holidays):
     d, count = day, 0
     for _ in range(800):
@@ -243,6 +252,9 @@ def run():
             text += ": business day"
         else:
             text += ": HOLIDAY (" + holidays[d.isoformat()] + "), NOT a business day" if d.isoformat() in holidays else ": weekend, NOT a business day"
+            prv = _previous_business(d, workdays, holidays)
+            if prv:
+                text += "; previous business day " + prv.isoformat() + " " + WEEKDAYS[prv.weekday()]
             nxt = _next_business(d, workdays, holidays)
             if nxt:
                 text += "; next business day " + nxt.isoformat() + " " + WEEKDAYS[nxt.weekday()]

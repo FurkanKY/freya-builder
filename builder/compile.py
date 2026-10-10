@@ -162,7 +162,16 @@ def _closed_transition(target="hang_up"):
             [{"variable": "close_call_success_count", "operator": "greater_than", "operand": 0}]}}
 
 
+def _tool_key(key):
+    # The model sometimes keys tools by API path ("/v1/close_call"); the compiler looks them up by tool name.
+    return str(key).strip().strip("/").split("/")[-1]
+
+
 def compile_workflow(spec, api, briefs):
+    spec = dict(spec)
+    for section in ("tool_descriptions", "tool_field_hints"):
+        if isinstance(spec.get(section), dict):
+            spec[section] = {_tool_key(k): v for k, v in spec[section].items()}
     policy = spec.get("policy") or {}
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
