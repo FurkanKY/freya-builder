@@ -6,7 +6,7 @@ A proxy for the platform simulation (gemini persona and judge), not the same thi
 
 Usage (from the repo root):
   chat_cases.py <workflow_id> [--brief A|B] [--only PUB-01,PUB-12] [--cases file.json] [--reps 3] [--style talkative]
-                [--workers 5] [--out results.json]
+                [--workers 5] [--out results.json] [--infra-retries 2]
 Never prints secrets."""
 import argparse, json, os, re, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -147,11 +147,14 @@ def run_case(wid, case, style, outdir, tag):
         if not c.get("true"):
             r["failed"].append("check: " + str(c.get("check")) + " -- " + str(c.get("why"))[:200])
     r["pass"] = not r["failed"]
-    row = {"id": case["id"], "tag": tag, "pass": r["pass"], "failed": r["failed"], "call_id": call_id,
-           "tools": [x.get("tool") for x in led.get("calls", [])], "note": note}
-    (outdir / f"{case['id']}-{tag}.txt").write_text("\n".join(lines) + "\n\n" + json.dumps(row, indent=1))
+    tools = [x.get("tool") for x in led.get("calls", [])]
+    # A platform error (5xx, "Agent service error") that cut the call before it closed says nothing about the agent.
+    infra = bool(note) and not r["pass"] and "close_call" not in tools
+    row = {"id": case["key"], "tag": tag, "pass": r["pass"], "infra": infra, "failed": r["failed"], "call_id": call_id,
+           "tools": tools, "note": note}
+    (outdir / f"{case['key']}-{tag}.txt").write_text("\n".join(lines) + "\n\n" + json.dumps(row, indent=1))
     with LOCK:
-        print(("PASS" if r["pass"] else "FAIL"), case["id"], tag, call_id, flush=True)
+        print(("PASS" if r["pass"] else "INFRA" if infra else "FAIL"), case["key"], tag, call_id, flush=True)
         for f in r["failed"]:
             print("      -", f[:300], flush=True)
     return row
@@ -161,8 +164,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("workflow_id"); ap.add_argument("--brief"); ap.add_argument("--only"); ap.add_argument("--cases", default="vendor/kit-v3/public-test-set.json")
     ap.add_argument("--reps", type=int, default=1); ap.add_argument("--style"); ap.add_argument("--workers", type=int, default=5); ap.add_argument("--out")
+    ap.add_argument("--infra-retries", type=int, default=2)
     a = ap.parse_args()
     cases = [c for c in json.load(open(a.cases)) if (not a.brief or c["brief"] == a.brief) and (not a.only or c["id"] in a.only.split(","))]
+    for c in cases:                       # variants reuse a public customer, so one id can name several cases
+        same = [x for x in cases if x["id"] == c["id"]]
+        c["key"] = c["id"] if len(same) == 1 else f"{c['id']}-v{same.index(c) + 1}"
     outdir = Path(a.out or f"chatrun-{time.strftime('%H%M%S')}")
     if outdir.suffix == ".json":
         outdir = outdir.with_suffix("")
@@ -170,13 +177,24 @@ def main():
     jobs = [(c, f"r{rep + 1}") for rep in range(a.reps) for c in cases]
     with ThreadPoolExecutor(a.workers) as pool:
         rows = list(pool.map(lambda j: run_case(a.workflow_id, j[0], a.style, outdir, j[1]), jobs))
+        for again in range(a.infra_retries):          # runs a platform error cut short are run again
+            redo = [i for i, row in enumerate(rows) if row["infra"]]
+            if not redo:
+                break
+            time.sleep(60)
+            fresh = list(pool.map(lambda i: run_case(a.workflow_id, jobs[i][0], a.style, outdir, jobs[i][1]), redo))
+            for i, row in zip(redo, fresh):
+                rows[i] = row
     by = {}
     for row in rows:
-        by.setdefault(row["id"], []).append(row["pass"])
+        if not row["infra"]:
+            by.setdefault(row["id"], []).append(row["pass"])
     print()
     for cid, ps in by.items():
         print(("PASS" if all(ps) else "FAIL"), cid, f"{sum(ps)}/{len(ps)}")
-    print(f"\n{sum(all(ps) for ps in by.values())} / {len(by)} cases pass every run. Transcripts in {outdir}")
+    cut = sum(row["infra"] for row in rows)
+    print(f"\n{sum(all(ps) for ps in by.values())} / {len(by)} cases pass every run"
+          + (f" ({cut} runs cut short by platform errors are left out)" if cut else "") + f". Transcripts in {outdir}")
     (outdir / "summary.json").write_text(json.dumps({"workflow_id": a.workflow_id, "rows": rows}, indent=1))
 
 

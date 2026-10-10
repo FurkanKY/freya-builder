@@ -583,6 +583,7 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
     next_of = dict()
     now = []
     pending, unasked, stopped, offered = [], [], [], []
+    first_done = bool(own) or any(int(counts.get(pl[0]) or 0) for pl in plans)
     for pid, label, steps, allowed, _, floor in plans:
         k = int(counts.get(pid) or 0)
         text = pid + " " + label + ": refused " + str(k) + (" time" if k == 1 else " times")
@@ -595,6 +596,13 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
         elif k == 0:
             unasked.append(pid)
             text += "; nothing refused yet"
+            if first_done and (steps or total):
+                # "Not the card or the loan, but we can talk about the car loan": the first ask covered the car loan too.
+                # Seen in a chat run: the model asked it again for the car loan alone. Its answer may still be a day of
+                # the customer's own, so it is not counted; the line names the proposal that comes instead.
+                text += ("; the first ask already covered it, so do not ask it again for " + pid + ". Unless the customer"
+                         " gives a day or an amount for it, its next proposal is attempt 1: "
+                         + (steps[0] if steps else "persuasion attempt 1 as the policy says"))
         elif total is not None and k > total:
             stopped.append(pid)
             text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + ", not its floor and not another date, and apply the policy for a product without a promise"
