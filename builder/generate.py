@@ -34,7 +34,7 @@ SCHEMA = """Return exactly this shape:
   "identity": {
     "questions": [{"field": "<verify_identity field enum value>", "ask": "<how to ask it>", "answer_format": "<format the tool needs and how to convert what callers say>"}],
     "complete_flag": "<boolean property of the verify_identity response that means the whole identity check passed; dotted path if nested>",
-    "answer_flag": "<boolean property of the verify_identity response that means this one answer was correct; dotted path if nested>"
+    "answer_flag": "<boolean property of the verify_identity response that means this one answer was correct; dotted path if nested. When the names alone must decide: the per-answer flag is named like the check itself (verified, correct, match), the whole-check flag names the overall state (all_verified, passed, complete, identity_confirmed)>"
   },
   "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}]},
   "account": {
