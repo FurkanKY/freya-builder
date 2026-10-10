@@ -53,3 +53,22 @@ def test_transient_errors_are_retried_but_client_errors_are_not(tmp_path, monkey
     try: c.api("GET", "/y")
     except RuntimeError: pass
     assert len(calls) == 1
+
+
+def test_an_unavailable_service_is_retried_while_the_budget_allows(tmp_path, monkeypatch):
+    from builder import freya_client
+    pauses = []
+    monkeypatch.setattr(freya_client.time, "sleep", pauses.append)
+    calls = []
+    def down(method, path, body, params, timeout):
+        calls.append(path)
+        if len(calls) < 20: raise freya_client.Unavailable("503: API key validation is temporarily unavailable")
+        return {"ok": True}
+    c = Client("unused", Budget(1800), workspace_id="ws", state_path=tmp_path/'state.json', transport=down)
+    assert c.api("GET", "/x") == {"ok": True} and len(calls) == 20 and max(pauses) == 30
+    # With no time left for a pause, the error comes back at once.
+    calls.clear()
+    c = Client("unused", Budget(150), workspace_id="ws", state_path=tmp_path/'state.json', transport=down)
+    try: c.api("GET", "/y")
+    except freya_client.Unavailable: pass
+    assert len(calls) == 1

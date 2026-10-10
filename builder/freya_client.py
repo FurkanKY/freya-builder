@@ -11,6 +11,10 @@ class TransientError(RuntimeError):
     pass
 
 
+class Unavailable(TransientError):
+    """The service answered that it cannot take requests now (429, 502, 503, 504): the request was not run."""
+
+
 AGENT_LLM = {"provider":"experimental-5", "model":"experimental-5"}
 
 
@@ -24,12 +28,22 @@ class Client:
 
     def api(self,method,path,body=None,finalizing=False,**params):
         # Transient failures (5xx, dropped connections, timeouts) get two more tries; 4xx never retries.
-        for attempt in range(3):
+        # A service that says it is unavailable is retried as long as the budget leaves time, with a growing
+        # pause: an outage of some minutes then costs build time instead of the build.
+        attempt=0
+        while True:
             try:
                 return self._api(method,path,body,finalizing,params)
+            except Unavailable:
+                attempt+=1
+                pause=min(30,2*attempt)
+                left=self.budget.remaining() if finalizing or self.finalizing else self.budget.available()
+                if left<pause+30: raise
+                time.sleep(pause)
             except TransientError:
-                if attempt==2 or self.budget.available()<10: raise
-                time.sleep(2*(attempt+1))
+                attempt+=1
+                if attempt>=3 or self.budget.available()<10: raise
+                time.sleep(2*attempt)
 
     def _api(self,method,path,body,finalizing,params):
         timeout=min(30,self.budget.require(1,finalizing=finalizing or self.finalizing))
@@ -42,7 +56,8 @@ class Client:
                 result=json.load(response)
         except urllib.error.HTTPError as exc:
             detail=f"Freya {method} {path} -> {exc.code}: {exc.read().decode(errors='replace')[:800]}"
-            if exc.code>=500 or exc.code==429: raise TransientError(detail) from None
+            if exc.code in (429,502,503,504): raise Unavailable(detail) from None
+            if exc.code>=500: raise TransientError(detail) from None
             raise RuntimeError(detail) from None
         except (urllib.error.URLError,TimeoutError,ConnectionError) as exc:
             raise TransientError(f"Freya {method} {path} unreachable: {type(exc).__name__}") from None
