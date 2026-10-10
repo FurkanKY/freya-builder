@@ -7,6 +7,7 @@ Times are Istanbul time (UTC+3). Briefs open at 20:00, submissions close at 23:0
 - Tests pass: `PYTHONPATH=. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q`.
 - `submission/` holds no rehearsal files.
 - No simulation is running in the workspace.
+- `.env` sets `BUILDER_MODEL=claude-sonnet-5` (or leaves it out), never the bare alias `sonnet`: a Claude Code update can move the alias to another model, and every measured build used `claude-sonnet-5`. After each build, the `model_start` lines in the trace name `claude-sonnet-5`.
 
 ## For each final brief (slot final-1 for the first, final-2 for the second)
 1. Put the brief files and the tool API file in a new folder `final/<n>/`, unchanged.

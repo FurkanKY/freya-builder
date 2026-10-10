@@ -70,7 +70,7 @@ async def execute(a):
     run_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S-%fZ")
     run_dir=ROOT/"runs"/run_id; run_dir.mkdir(parents=True)
     trace=Trace(run_dir/"trace.jsonl",secrets=[env.get("FREYA_API_KEY"),env.get("FREYA_BANK_TEAM_KEY")])
-    model=a.model or env.get("BUILDER_MODEL") or "sonnet"
+    model=a.model or env.get("BUILDER_MODEL") or "claude-sonnet-5"
     commit=subprocess.run(["git","rev-parse","HEAD"],cwd=ROOT,capture_output=True,text=True).stdout.strip()
     dirty=bool(subprocess.run(["git","status","--porcelain"],cwd=ROOT,capture_output=True,text=True).stdout)
     trace.emit("build_start",run_id=run_id,input_fingerprint=inputs["fingerprint"],kit_version=3,commit=commit,dirty=dirty,model=model,seconds=a.seconds,reads=reads_wanted(env.get("BUILDER_READS")))

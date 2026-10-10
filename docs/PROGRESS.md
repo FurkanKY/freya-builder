@@ -284,3 +284,18 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - 02c6f7c'nin sohbet denemesi (sürüm 21, PUB-12'yi tur tur oynayan betikle): kapanış düğümüne STOP turunda girildi, geri okuma doğruydu, taban teklif edilmedi. Ama kişisel kredinin notu bir kez pazarlıkta (STOP anında), bir kez de kapanışta yazıldı; defter puanlayıcısı çift notu hata sayıyor.
 - Düzeltme (4879ddb): platform her aracın son argümanlarını `<araç>_args.<alan>` olarak değişken tablosunda tutuyor (canlıda görüldü). facts.py her çalışmada başarılı çağrıları ürün bazında `recorded_calls`'a ekliyor; kapanış satırları "add_note bu ürün için zaten yapıldı, tekrar çağırma" diyor. Geri okumadan önce kaydedilmiş bir söz varsa da geri okuma yapılmıyor.
 - 4879ddb (sürüm 22) sohbet denemeleri: PUB-12 4/4 defter PASS (3 sıralı, 1 toplu cevap). Bu dört denemede model notu pazarlıkta yazmadı, yani "zaten yapıldı" yolu canlıda henüz tetiklenmedi; birim testte duruyor.
+- Yerel ölçüm betiği `scripts/chat_cases.py`: kit vakalarını `chat/message` üzerinden, simülasyon yuvası kullanmadan koşturuyor.
+  - Müşteriyi Claude (sonnet) kitin kendi persona metniyle oynuyor.
+  - Defteri kitin `score_ledger`'ı puanlıyor; konuşma kontrollerini Claude bir yargıç olarak, konuşma dökümü ve araç çağrıları üzerinden değerlendiriyor.
+  - Platformun gemini persona ve yargıcının yerine geçen bir yaklaşık ölçüm; aynısı değil.
+- 4879ddb, sürüm 22, AB × 3 sohbet: 13 vakanın 9'u her tekrarda geçti.
+  - PUB-04 r1 platform hatasıydı: `chat/message` 404 "Agent service error" döndü, konuşma yarıda kaldı.
+  - PUB-05 ve PUB-08 0/3 kaldı: Brief A müşterisine gereksiz add_note yazıldı.
+    - Sebebi builder modeli. Claude Code Cumartesi 23:30'da kendiliğinden 2.1.283'ten 2.1.296'ya güncellendi ve `sonnet` takma adı `claude-sonnet-5`'ten `claude-sonnet-5-5`'e kaydı.
+    - Bu modelin okumaları add_note kuralını kapsamsız yazıyor ("teklifsiz her ürün için add_note"). Ölçülen bütün eski build'ler, final-candidate dahil, `claude-sonnet-5` ile okunmuştu ve kural "Brief B only" diye kapsamlıydı.
+  - PUB-12 3 tekrarın 2'sinde geçti. r1'de model iki ürünün teklifini tek mesajda sordu ve ilk cevabın dışarıda bıraktığı ürünün ilk sorusu sayılmadı.
+- Düzeltme (7074252): ilk cevabın dışarıda bıraktığı ve henüz hiç teklif almamış ürünlerin ilk sorusu sayılıyor.
+  - Gün verilip başka ürün söylenmediğinde, gün verilmeyen ürünler de ilk sorudan sayılıyor.
+  - Sayaç değiştiğinde plan, sıradaki tek teklifi "NEXT STEP: your next message makes exactly this proposal and no other" satırıyla veriyor. Önünde hiç sorulmamış ürün varsa ya da gün verilmiş ama tarihli ürün yoksa bu satır yazılmıyor.
+- Builder modeli `claude-sonnet-5`'e sabitlendi: `build.py` varsayılanı, `.env.example`, README ve FINAL.md'de bir kontrol satırı. `.env` de aynı değere çekildi.
+  - 7074252'nin bu modelle build'i (sürüm 23) spec_vote 74/74/74 verdi, farklı alan yok. Üç okumanın üçü de add_note'u "Brief B only" diye yazdı.

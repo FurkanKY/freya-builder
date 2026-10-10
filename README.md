@@ -18,7 +18,9 @@ cp .env.example .env
 ```
 
 Set `FREYA_API_KEY`, a persistent `FREYA_BANK_TEAM_KEY` of at least 16 characters,
-and optionally `BUILDER_MODEL`. Never commit `.env`. Authenticate Claude Code normally.
+and optionally `BUILDER_MODEL` (default `claude-sonnet-5`; keep the full model id, since a
+Claude Code update can move the `sonnet` alias to another model). Never commit `.env`.
+Authenticate Claude Code normally.
 
 ## Build
 
