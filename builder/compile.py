@@ -13,7 +13,8 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 # Variables that are set before or during a call; a body field with one of these names would be baked.
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
-            "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls"}
+            "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
+            "readback_said", "wrap_up_mode", "wrap_up_say"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -324,7 +325,12 @@ def compile_workflow(spec, api, briefs):
             "name": "dated_products", "type": "string", "min_confidence": 0.5,
             "description": "The products the customer names a day, a date or an amount to pay for in their LAST message, named with the"
                            " assistant's own words for them, for example 'credit card'; 'all' when the day or amount is for all of them."
-                           " 'none' when the last message names no day, date or amount to pay."}] if COUNT_CHECK else [])}
+                           " 'none' when the last message names no day, date or amount to pay."}, {
+            # The closing read-back is a fixed line with the amount owed; an amount of the customer's own turns it off.
+            "name": "named_amount_words", "type": "string", "min_confidence": 0.5,
+            "description": "An amount of money the customer themselves says they can or will pay in their LAST message, copied as said,"
+                           " for example '300', 'two hundred', 'half of it'. 'none' when the last message names no amount of their own:"
+                           " it only accepts, refuses or repeats the assistant's amount, or names only a day."}] if COUNT_CHECK else [])}
            if DATE_CHECK else {}),
         # Multi-rule date, amount and per-product attempt decisions happen here.
         "reasoning_override": NEGOTIATE_REASONING,
@@ -336,6 +342,7 @@ def compile_workflow(spec, api, briefs):
                 {"variable": v, "operator": "not_equals", "operand": "none"}] + extra}
                 for v, extra in [("named_day_words", [])] + ([("refused_products", [
                     # One product keeps the flow that passes today.
+                    {"variable": "product_count", "operator": "not_equals", "operand": "1"}]), ("named_amount_words", [
                     {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])]}}] if DATE_CHECK else []),
     }
 
@@ -362,12 +369,20 @@ def compile_workflow(spec, api, briefs):
         "account_facts": code_node("account_facts", "negotiate"),
         "negotiate": negotiate_node,
         **({"check_date": code_node("check_date", "negotiate", [] if not COUNT_CHECK else [{
+            # Seen live: on the turn of the last refusal the model made one more proposal, copying its earlier ones. When the
+            # code can build the read-back, that turn's reply is a fixed line (no model call); later turns use wrap_up.
+            "target_node": "wrap_up_readback", "description": "no product has a proposal left and the read-back is a fixed line",
+            "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
+                {"variable": "negotiation_done", "operator": "equals", "operand": "yes"},
+                {"variable": "wrap_up_mode", "operator": "equals", "operand": "say"}]}]}}, {
             "target_node": "wrap_up", "description": "no product has a proposal left",
             "condition": {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}])}
            if DATE_CHECK else {}),
         **({"wrap_up": dict(negotiate_node, name="wrap_up", task_message=wrap_up_task,
                             # The entry line is the reply on the turn of the last refusal: it is given the one thing to say.
-                            on_enter={"type": "llm", "prompt": "Reply to the customer now, doing exactly the NEXT STEP at the end of your task: {{wrap_up_step}}"})}
+                            on_enter={"type": "llm", "prompt": "Reply to the customer now, doing exactly the NEXT STEP at the end of your task: {{wrap_up_step}}"}),
+            "wrap_up_readback": dict(negotiate_node, name="wrap_up_readback", task_message=wrap_up_task,
+                                     on_enter={"type": "tts", "text": "{{wrap_up_say}}"})}
            if DATE_CHECK and COUNT_CHECK else {}),
         "hang_up": {
             "name": "hang_up", "node_type": "end_call", "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True,

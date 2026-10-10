@@ -76,6 +76,9 @@ def trace(call_id):
             data = res.get("data") if isinstance(res, dict) else None
             if isinstance(data, dict) and "ok" in data:
                 lines.append(f"[tool result {e.get('function')} ok={data.get('ok')}" + (f" error={data.get('error')}" if data.get("error") else "") + "]")
+        if e.get("event") == "function_call_error" and e.get("function") not in ("code_exec", "end_call"):
+            # A failed call (the bank's 5xx) is its own event: show it, so a retry is seen as a retry.
+            lines.append(f"[tool result {e.get('function')} FAILED: {str(e.get('error'))[:120]}]")
     return lines, ended
 
 

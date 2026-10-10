@@ -213,8 +213,10 @@ def test_refusals_are_counted_per_product_in_code():
     wf = compile_workflow(spec, API, BRIEFS)
     assert validate_workflow(wf, API) == []
     negotiate = wf["nodes"]["negotiate"]
-    assert [f["name"] for f in negotiate["extraction_schema"]] == ["named_day_words", "refused_products", "proposed_products", "dated_products"]
-    assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == ["named_day_words", "refused_products"]
+    assert [f["name"] for f in negotiate["extraction_schema"]] == ["named_day_words", "refused_products", "proposed_products", "dated_products",
+                                                                  "named_amount_words"]
+    assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == ["named_day_words", "refused_products",
+                                                                                                                "named_amount_words"]
     assert "{{plan_state}}" in negotiate["task_message"]
     products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
                 {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
@@ -426,8 +428,26 @@ def test_stop_names_the_next_step():
     # The closing node takes over: it is routed to from check_date and shows no persuasion plan.
     assert out["negotiation_done"] == "yes"
     assert "p3 car loan: DONE" in out["wrap_up_facts"] and "p1 credit card ending 9015 (amount owed now 510; deadline " in out["wrap_up_facts"]
-    assert out["wrap_up_facts"].splitlines()[-1].startswith("NEXT STEP: no product has a proposal left. Your next message is the read-back for p1")
+    # On the turn of the last refusal the read-back is a fixed line built by code (no model call), so no pattern can be copied.
+    say = "Understood. Let me read back your promise: credit card ending 9015, 510 on Thursday, 15 October. Do you confirm?"
+    assert out["wrap_up_mode"] == "say" and out["wrap_up_say"] == say
+    assert out["wrap_up_facts"].splitlines()[-1].startswith("NEXT STEP: the read-back for p1 credit card ending 9015 has just been said, word"
+                                                             ' for word: "' + say + '" After a clear yes call create_promise')
     assert out["wrap_up_step"] == out["wrap_up_facts"].splitlines()[-1]
+    # The next turns are the model's: the fixed line is said once, and the step says it was said.
+    again = run_facts(wf, dict(out, named_day_words="Thursday, 15 October"))
+    assert again["wrap_up_mode"] == "llm" and again["negotiation_done"] == "yes"
+    assert again["wrap_up_step"].startswith("NEXT STEP: the read-back for p1 credit card ending 9015 was already said and the customer was asked"
+                                            " to confirm it. If they said a clear yes, call create_promise")
+    # A day the customer changes is read back by the model.
+    moved = run_facts(wf, dict(out, named_day_words="Friday", dated_products="credit card"))
+    assert moved["wrap_up_mode"] == "llm" and "Your next message is the read-back for p1" in moved["wrap_up_step"]
+    # An amount of the customer's own turns the fixed line off: it would read the amount owed.
+    before = dict(out, refusal_counts=json.dumps({"p2": 3, "p3": 1}), readback_said="{}", negotiation_done="no", named_amount_words="300")
+    owned = run_facts(wf, dict(before, refused_products="car loan", proposed_products="car loan"))
+    assert owned["amount_named"] == "yes" and owned["named_amount_words"] == "none"
+    assert owned["wrap_up_mode"] == "llm" and owned["negotiation_done"] == "yes"
+    assert owned["wrap_up_step"].startswith("NEXT STEP: no product has a proposal left. Your next message is the read-back for p1")
     # The closing phase shows no figure of a finished product: no floor, no band table, no deadline of p2 or p3 in the calendar.
     task = wf["nodes"]["wrap_up"]["task_message"]
     for k, v in out.items():
@@ -436,11 +456,18 @@ def test_stop_names_the_next_step():
     assert "Deadlines computed from today" not in out["date_facts"] and "deadline of p3" not in out["date_facts"]
     assert "deadline of p1" in out["date_facts"]
     assert wf["nodes"]["wrap_up"]["on_enter"] == {"type": "llm", "prompt": "Reply to the customer now, doing exactly the NEXT STEP at the end of your task: {{wrap_up_step}}"}
+    readback = wf["nodes"]["wrap_up_readback"]
+    assert readback["on_enter"] == {"type": "tts", "text": "{{wrap_up_say}}"} and readback["on_enter_first_entry_only"] is True
+    assert readback["tools"] == wf["nodes"]["wrap_up"]["tools"] and readback["transitions"] == wf["nodes"]["wrap_up"]["transitions"]
+    assert readback["task_message"] == wf["nodes"]["wrap_up"]["task_message"]
     assert "PERSUASION PLAN" not in wf["nodes"]["wrap_up"]["task_message"] and "{{account_facts}}" not in wf["nodes"]["wrap_up"]["task_message"]
     assert wf["nodes"]["wrap_up"]["task_message"].rstrip().endswith("{{wrap_up_facts}}")
     route = wf["nodes"]["check_date"]["transitions"]
-    assert route[0]["target_node"] == "wrap_up" and route[-1] == {"target_node": "negotiate", "description": "always", "condition": {"operator": "always"}}
-    assert route[0]["condition"] == {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}
+    assert route[0]["target_node"] == "wrap_up_readback" and route[1]["target_node"] == "wrap_up"
+    assert route[-1] == {"target_node": "negotiate", "description": "always", "condition": {"operator": "always"}}
+    assert route[0]["condition"] == {"logic": "or", "conditions": [{"logic": "and", "conditions": [
+        {"variable": "negotiation_done", "operator": "equals", "operand": "yes"}, {"variable": "wrap_up_mode", "operator": "equals", "operand": "say"}]}]}
+    assert route[1]["condition"] == {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}
     bad = json.loads(json.dumps(wf))
     bad["nodes"]["check_date"]["transitions"][0]["condition"]["logic"] = "and"
     assert any("top-level logic must be or" in issue for issue in validate_workflow(bad, API))
@@ -489,7 +516,8 @@ def test_a_day_named_with_a_partial_refusal_is_an_offer_for_the_other_products()
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan"))
-    assert out["negotiation_done"] == "yes" and "p1 credit card ending 9015: the day the customer gave, 2026-10-15" in out["wrap_up_step"]
+    assert out["negotiation_done"] == "yes" and out["wrap_up_mode"] == "say"
+    assert "credit card ending 9015, 510 on Thursday, 15 October" in out["wrap_up_say"]
     # Before any product is finished the date facts are complete.
     early = run_facts(wf, dict(base, named_day_words="tomorrow", refused_products="personal loan and car loan", proposed_products="all"))
     assert "Deadlines computed from today" in early["date_facts"] and early["wrap_up_step"] == "Not in the closing phase."

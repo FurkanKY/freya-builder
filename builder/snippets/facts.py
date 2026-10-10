@@ -693,6 +693,38 @@ def _wrap_up(plans, counts, own, owed=None, details=None, recorded=None):
                   " close the call as the CLOSING TABLE says.\n" + step), step
 
 
+AMOUNT_WORDS = ("hundred", "thousand", "half", "fifty", "twenty", "thirty", "forty", "sixty", "seventy", "eighty", "ninety",
+                "ten", "eleven", "twelve", "fifteen")
+
+
+def _amount_named(raw):
+    """True when the extraction holds an amount of the customer's own ('300', 'two hundred', 'half of it')."""
+    raw = str(raw or "").strip().lower()
+    if raw.strip(" .'\"") in ("", "none", "n/a", "null", "no", "nothing"):
+        return False
+    return bool(re.search(r"\d", raw) or re.search(r"\b(" + "|".join(AMOUNT_WORDS) + r")\b", raw))
+
+
+def _confirm_question(spec):
+    """The brief's own words for asking to confirm a promise when its policy quotes them, else a plain question."""
+    text = " ".join(str(v) for v in (spec.get("policy") or dict()).values())
+    for m in re.finditer(r"['\"\u201c\u2018]([A-Z][^'\"\u201c\u201d\u2018\u2019{}<>\n]{2,80}\?)['\"\u201d\u2019]", text):
+        if re.search(r"\bconfirm|\bcorrect\b|\bright\b", m.group(1), re.I):
+            return m.group(1)
+    return "Do you confirm?"
+
+
+def _readback_line(spec, items):
+    """The read-back said as a fixed line, with no model call, on the turn the last proposal is refused. `items` holds
+    (spoken name, amount, date) for each product the customer gave a day for. English only: the line is written in English."""
+    if not items or not str(spec.get("language") or "English").strip().lower().startswith("en"):
+        return ""
+    parts = [name + ", " + amount + " on " + WEEKDAYS[d.weekday()] + ", " + str(d.day) + " " + d.strftime("%B")
+             for name, amount, d in items]
+    return ("Understood. Let me read back your promise" + ("s" if len(items) > 1 else "") + ": " + "; ".join(parts) + ". "
+            + _confirm_question(spec))
+
+
 def run():
     spec = _spec()
     workdays, holidays = _calendar(spec)
@@ -862,6 +894,51 @@ def run():
     # One product keeps the flow that passes today: the model counts its own plan.
     vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded, day_named, dated_now) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
     done, wrap, step = _wrap_up(plans, counts, settled, owed, details, recorded) if len(plans) > 1 else (False, "", "")
+    prev_done = str(vars.get("negotiation_done") or "")
+    if _amount_named(vars.get("named_amount_words")):
+        vars["amount_named"] = "yes"
+    vars["named_amount_words"] = "none"
+    try:
+        said = json.loads(str(vars.get("readback_said") or "{}"))
+        said = said if isinstance(said, dict) else dict()
+    except Exception:
+        said = dict()
+    say = ""
+    if done:
+        ids, items = [], []
+        for pid, label, _s, _a, _t, _f in plans:
+            if int(counts.get(pid) or 0) == 0 and pid in settled and "create_promise" not in (recorded.get(pid) or []):
+                try:
+                    day = datetime.date.fromisoformat(str(days_of.get(pid) or "")[:10])
+                except Exception:
+                    day = None
+                ids.append((pid, label))
+                items.append((label, owed_amount.get(pid, ""), day))
+        key = dict((pid, str(days_of.get(pid) or "")[:10]) for pid, _ in ids)
+        names = ", ".join(pid + " " + label for pid, label in ids)
+        if ids and all(day and amount for _, amount, day in items):
+            # Seen live: on the turn of the last refusal the model kept the pattern of its earlier proposals and made one more
+            # for a finished product, whatever the step said. A fixed line has no pattern to follow. Only once per call, only
+            # on a plain refusal turn, and never after the customer named an amount of their own (the line reads the amount owed).
+            if not said and prev_done != "yes" and changed and not day_named and vars.get("amount_named") != "yes":
+                say = _readback_line(spec, items)
+            new_step = ""
+            if say:
+                said = key
+                new_step = ("NEXT STEP: the read-back for " + names + " has just been said, word for word: \"" + say + "\" After a clear"
+                            " yes call create_promise for each of them, then do the remaining closing steps. If the customer changes the"
+                            " day or the amount, settle it under the date and amount rules and read the new one back.")
+            elif said and said == key:
+                new_step = ("NEXT STEP: the read-back for " + names + " was already said and the customer was asked to confirm it. If"
+                            " they said a clear yes, call create_promise for each of them now, then do the remaining closing steps; do"
+                            " not read it back again. If they changed the day or the amount, settle it under the date and amount rules"
+                            " and read the new one back.")
+            if new_step and wrap.endswith(step):
+                wrap = wrap[:len(wrap) - len(step)] + new_step
+                step = new_step
+    vars["readback_said"] = json.dumps(said, sort_keys=True)
+    vars["wrap_up_mode"] = "say" if say else "llm"
+    vars["wrap_up_say"] = say or "Thank you."
     vars["negotiation_done"] = "yes" if done else "no"
     vars["wrap_up_facts"] = wrap or "Not in the closing phase."
     vars["wrap_up_step"] = step or "Not in the closing phase."
