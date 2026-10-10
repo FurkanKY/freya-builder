@@ -200,3 +200,24 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - asks_back PUB-12: "Why do you need that?" sorusundan sonra soru tekrarlandı, hakem bunu yeniden sorma olarak saydı. Düzeltme (e0a1897): sebep söyleniyor, soru tekrarlanmıyor.
   - in_words PUB-12: kesik "I can pay the five hundred and ten" mesajı "bugün" diye yorumlandı ve `create_promise` geri okuma ve onay olmadan çağrıldı. Tek görülme; kodla engelleme yanlış alarm riski taşıdığı için yapılmadı, izleniyor.
 - Final provası (9872088, gözetimsiz, `--suite` yok): geny ve genx her biri yaklaşık 56 sn, validated, export ve submit tamam, sır taraması temiz. Bulgu: "ayın son iş günü" son tarihi takvim günü olarak hesaplanıyordu. Düzeltme (6ac9c91): `last_business_day_of_month` türü eklendi, normalizasyonu ve testi var.
+
+## Aşama 14 — Sayacın canlı ölçümü, yalnız yapılan tekliflerin sayılması
+- Build 20261010T184025-751045Z (e0a1897): build testi 11/13.
+  - PUB-05: A+B birleşmesindeki bilinen not çatışması.
+  - PUB-12: canlı değişken tablosuna göre sayaç her turda doğru saydı, araç kredisi tek denemeden sonra STOP gördü. Model buna rağmen araç kredisinin tabanını (46) teklif etti. Sorun sayımda değil, STOP'a uymada.
+- Varyantlar (tests/fixtures/variants-b.json, × 3): PUB-11, PUB-12 ve PUB-13 varyantlarının her biri 3/3, 9 çağrının 9'u geçti.
+- Değişiklik incelemesi (9 ajan, 4 doğrulanmış bulgu, hepsi sayaçta):
+  - "None." veya "nothing" gibi yazımlar her ürünü ret sayıyordu;
+  - ilk soruya kısmi bir cevap sayılmıyordu, sayaç bir adım geride kalıyordu;
+  - bir ürünün teklifi sırasında gelen toplu ret ("none of them"), teklif edilmemiş ürünlerin haklarını da tüketiyordu.
+- Düzeltme (9b2c9e0):
+  - yeni extraction alanı `proposed_products`, asistanın son mesajında ödemesini istediği ürünler. Bu alan yönlendirme yapmıyor;
+  - ilk soru her ürün için en fazla bir kez sayılıyor; sonraki retler yalnız teklif edilen ürünlere yazılıyor;
+  - sayılmamış bir ilk sorudan sonraki ilk teklif yine 1. deneme sayılıyor;
+  - "hiçbiri" değerinin her yazımı ret sayılmıyor;
+  - STOP olduğu turda PROPOSAL COUNT'un başında, ürünün taban tutarı adıyla yazılarak "artık hiçbir şey teklif etme" satırı var. FRAME'de de aynı kural var.
+- Aynı committe küçük genel düzeltmeler:
+  - "all except X";
+  - ay sonu türü yalnız bu ayın sonu için;
+  - ikinci kesik mesaja soruyu tekrarlamak yerine "could you say it again?";
+  - genel kodda Brief B'ye özgü "today" ifadesi kaldırıldı.
