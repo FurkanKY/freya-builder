@@ -53,10 +53,15 @@ def _post_hook(tool, flag=None, answer_flag=None, complete_value=None):
         "        result.pop('header', None)",
         "        d = result.get('data')",
         "        if not isinstance(d, dict):",
-        "            d = dict()",
+        "            d = dict(error=str(d)[:200]) if d not in (None, '') else dict()",
         "            result['data'] = d",
+        # An HTTP error or a failed request is never a success, whatever the body says.
+        "        code = result.get('status_code')",
+        "        failed = str(result.get('status') or 'success').lower() != 'success' or (isinstance(code, int) and code >= 400)",
+        "        if failed and not d.get('error'):",
+        "            d['error'] = str(result.get('message') or code or 'request failed')[:200]",
         # Banks name the success flag differently; without one, a reply with no error counts as success.
-        "        ok = d.get('ok') if 'ok' in d else d.get('success') if 'success' in d else (not d.get('error'))",
+        "        ok = False if failed else d.get('ok') if 'ok' in d else d.get('success') if 'success' in d else (not d.get('error'))",
         "        if ok is True or str(ok).lower() == 'true':",
     ]
     if tool == "verify_identity":

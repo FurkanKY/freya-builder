@@ -66,6 +66,15 @@ def test_hooks_follow_the_banks_own_flags():
     assert "IS recorded" in run_hook(promise, {"success": True})
     assert "IS recorded" in run_hook(promise, {"promise_id": "x"})
     assert "NOT recorded" in run_hook(promise, {"error": "down"})
+    # An HTTP failure is never reported as recorded, whatever shape the body has.
+    for envelope in ({"status": "error", "status_code": 500, "data": "<html>bad gateway</html>"},
+                     {"status": "success", "status_code": 503, "data": None},
+                     {"status": "error", "message": "timeout", "data": {}}):
+        exec(promise, {"result": envelope})
+        assert "NOT recorded" in envelope["data"]["what_to_do_next"]
+    ok = {"status": "success", "status_code": 200, "data": {"ok": True}}
+    exec(promise, {"result": ok})
+    assert "IS recorded" in ok["data"]["what_to_do_next"]
 
 
 def test_identity_answers_named_like_call_variables_are_not_baked():
