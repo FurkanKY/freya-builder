@@ -149,14 +149,16 @@ def test_named_day_is_checked_in_code_and_cleared():
     out = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products)})
     assert out["named_day_facts"] == "No exact day named yet."
     out = run_facts(wf, dict(out, named_date="2026-10-26"))
-    assert out["named_date"] == ""
+    assert out["named_date"] == "none"
     assert "2026-10-26 Monday: HOLIDAY (bank holiday), NOT a business day; previous business day 2026-10-23 Friday; next business day 2026-10-27 Tuesday; on or before the deadline of p1" in out["named_day_facts"]
     out = run_facts(wf, dict(out, named_date="2026-11-07"))
     assert "2026-11-07 Saturday: weekend, NOT a business day" in out["named_day_facts"]
     assert "AFTER the deadline of p1 (p1 deadline 2026-10-29 Thursday)" in out["named_day_facts"]
     # A cleared or unreadable date leaves the last check in place and never raises.
     out = run_facts(wf, dict(out, named_date="someday"))
-    assert out["named_date"] == "" and "2026-11-07" in out["named_day_facts"]
+    assert out["named_date"] == "none" and "2026-11-07" in out["named_day_facts"]
+    out = run_facts(wf, dict(out))
+    assert "2026-11-07" in out["named_day_facts"]
 
 
 def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
@@ -171,3 +173,22 @@ def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
     assert "after attempt 2 is refused: STOP, no more payment proposals for this product" in facts
     assert "attempt 1: attempt 1" not in facts
     assert "Today IS that day." in out["date_facts"]
+
+
+def test_facts_read_products_flattened_under_the_node_name():
+    # Seen live: the api_request result is flattened as load_account_response.data.products.N.field and
+    # the response_mapping variable is absent.
+    wf = compile_workflow(SPEC, API, BRIEFS)
+    flat = {"now": "2026-10-21T09:00", "load_account_response.data.ok": True,
+            "load_account_response.data.products.0.product_id": "p1", "load_account_response.data.products.0.type": "credit_card",
+            "load_account_response.data.products.0.card_last4": "1234", "load_account_response.data.products.0.past_due": 300,
+            "load_account_response.data.products.0.days_late": 4, "load_account_response.data.products.0.minimum_payment": 90,
+            "load_account_response.data.products.1.product_id": "p2", "load_account_response.data.products.1.type": "credit_card",
+            "load_account_response.data.products.1.card_last4": "5678", "load_account_response.data.products.1.past_due": 200,
+            "load_account_response.data.products.1.days_late": 2, "load_account_response.data.products.1.minimum_payment": 60,
+            "other_response.data.products.0.product_id": "x"}
+    out = run_facts(wf, flat)
+    assert out["facts_state"] == "ready" and out["product_count"] == "2"
+    assert "product_id p1: credit card ending 1234" in out["account_facts"]
+    assert "product_id p2: credit card ending 5678" in out["account_facts"]
+    assert "on or before the deadline of p1, p2" in out["date_facts"]

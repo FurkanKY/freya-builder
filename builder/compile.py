@@ -310,7 +310,8 @@ def compile_workflow(spec, api, briefs):
                 "target_node": "check_date", "description": "the customer named a day",
                 "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
                     {"variable": "named_date", "operator": "is_set"},
-                    {"variable": "named_date", "operator": "not_equals", "operand": ""}]}]}}] if DATE_CHECK else []),
+                    {"variable": "named_date", "operator": "not_equals", "operand": ""},
+                    {"variable": "named_date", "operator": "not_equals", "operand": "none"}]}]}}] if DATE_CHECK else []),
         },
         **({"check_date": code_node("check_date", "negotiate")} if DATE_CHECK else {}),
         "hang_up": {

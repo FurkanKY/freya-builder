@@ -120,7 +120,9 @@ def _label(d):
 def _parse_products(spec):
     acc = spec.get("account") or dict()
     field = acc.get("list_field") or "products"
-    candidates = [vars.get("account_products"), vars.get("get_account_response.data." + field)]
+    # The api_request node's result is flattened under the NODE name (load_account_response...), seen live;
+    # the mapped variable and the tool name are tried as well.
+    candidates = [vars.get("account_products")] + [vars.get(k) for k in list(vars.keys()) if str(k).endswith("_response.data." + field)]
     for raw in candidates:
         value = raw
         if isinstance(value, str):
@@ -133,14 +135,17 @@ def _parse_products(spec):
                     value = None
         if isinstance(value, list) and value and all(isinstance(p, dict) for p in value):
             return value
-    # Flattened keys such as get_account_response.data.products.0.past_due
-    rows = dict()
-    pattern = re.compile(r"(?:account_products|get_account_response\.data\." + re.escape(field) + r")[.\[](\d+)\]?\.(\w+)$")
+    # Flattened keys such as load_account_response.data.products.0.past_due; one source only, the fullest.
+    sources = dict()
+    pattern = re.compile(r"^(account_products|\w+_response\.data\." + re.escape(field) + r")[.\[](\d+)\]?\.(\w+)$")
     for key in list(vars.keys()):
         m = pattern.search(str(key))
         if m:
-            rows.setdefault(int(m.group(1)), dict())[m.group(2)] = vars.get(key)
-    return [rows[i] for i in sorted(rows)]
+            sources.setdefault(m.group(1), dict()).setdefault(int(m.group(2)), dict())[m.group(3)] = vars.get(key)
+    if not sources:
+        return []
+    best = sorted(sources.items(), key=lambda kv: (-len(kv[1]), not kv[0].startswith("load_account"), kv[0]))[0][1]
+    return [best[i] for i in sorted(best)]
 
 
 def _num(value):
@@ -236,9 +241,10 @@ def _day_line(d, today, workdays, holidays, deadlines):
 def _named_day(today, workdays, holidays, deadlines):
     """The day the extraction model read from the customer's last message, checked against the calendar, then cleared."""
     raw = str(vars.get("named_date") or "").strip()
-    if not raw:
+    if not raw or raw == "none":
         return
-    vars["named_date"] = ""
+    # Seen live: writing "" does not clear an extracted variable; "none" is excluded by the transition too.
+    vars["named_date"] = "none"
     m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", raw)
     try:
         day = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
