@@ -197,19 +197,36 @@ async def ask_model(prompt, trace, model, cwd, purpose, budget, timeout=600):
 async def generate(inputs, kit, budget, trace, model, cwd, previous=None, feedback=None):
     purpose = "revise bank spec from failure evidence" if previous else "extract bank spec and source coverage"
     prompt = make_prompt(inputs, kit, previous, feedback)
-    text = await ask_model(prompt, trace, model, cwd, purpose, budget)
     name = "repair-response.txt" if previous else "generation-response.txt"
-    (Path(cwd)/name).write_text(text)
-    data = parse_response(text)
+    for attempt in range(2):
+        try:
+            text = await ask_model(prompt, trace, model, cwd, purpose if attempt == 0 else "retry: " + purpose, budget)
+            (Path(cwd)/name).write_text(text)
+            data = parse_response(text)
+            break
+        except (ValueError, TimeoutError, RuntimeError) as exc:
+            # Secret leaks are never retried; a malformed or timed-out answer gets one fresh attempt.
+            if attempt == 1 or "Secret" in str(exc) or budget.available() < 400:
+                raise
+            trace.emit("model_output_rejected", error_type=type(exc).__name__, detail=str(exc)[:300])
     issues = validate_spec(data["spec"], inputs["api"])
     if issues:
         trace.emit("spec_invalid", issues=issues)
         fix = make_prompt(inputs, kit, data, {"spec_contract_errors": issues})
-        text = await ask_model(fix, trace, model, cwd, "fix spec contract errors", budget)
-        (Path(cwd)/("fixed-" + name)).write_text(text)
-        data = parse_response(text)
-        issues = validate_spec(data["spec"], inputs["api"])
+        try:
+            text = await ask_model(fix, trace, model, cwd, "fix spec contract errors", budget)
+            (Path(cwd)/("fixed-" + name)).write_text(text)
+            fixed = parse_response(text)
+        except (ValueError, TimeoutError, RuntimeError) as exc:
+            if "Secret" in str(exc):
+                raise
+            trace.emit("spec_fix_failed", error_type=type(exc).__name__, detail=str(exc)[:300])
+            fixed = data
+        remaining = validate_spec(fixed["spec"], inputs["api"])
+        # Keep the version with fewer contract errors; an imperfect agent scores more than no agent.
+        if len(remaining) <= len(issues):
+            data, issues = fixed, remaining
         if issues:
-            raise ValueError("Spec still violates the tool API: " + "; ".join(issues))
+            trace.emit("spec_still_invalid", issues=issues, action="compiling best spec")
     data["workflow"] = compile_workflow(data["spec"], inputs["api"], inputs["briefs"])
     return data

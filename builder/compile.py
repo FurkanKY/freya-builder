@@ -221,7 +221,7 @@ def compile_workflow(spec, api, briefs):
         "prepare": code_node("prepare", "identify"),
         "identify": {
             "name": "identify", "node_type": "conversation",
-            "on_enter": {"type": "tts", "text": spec["opening_line"]}, "on_enter_first_entry_only": True,
+            "on_enter": {"type": "tts", "text": spec.get("opening_line") or "Hello."}, "on_enter_first_entry_only": True,
             "task_message": identify_task,
             "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in pre_tools],
             "max_node_turns": 80, "max_turn_transition": "hang_up",
