@@ -131,3 +131,20 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
     - Araç kredisine (erken bant, tek deneme) "bugün" yeniden soruldu ve bu deneme sayıldı → iki deneme oldu. ec1145c'deki grup ret kuralı bunu hedefliyor; bu build onu içermiyordu.
     - `add_note`, `add_note` ve `close_call` aynı turda paralel gönderildi. Platform bunları eş zamanlı çalıştırıyor (close notlardan 140–300 ms sonra başladı); bir çağrıda kapanış önce düştü ve son not "the call is already closed" aldı. Düzeltme (d020451): close_call ön kancası 1,5 sn bekliyor.
   - PUB-05 1/3: tek ürünlü Brief A çağrısında `add_note` hardship. Sebep, A+B'nin tek ajanda birleştirilmesi: "Brief A never uses add_note" ile Brief B'nin kuralı çatışıyor. Finalde her brief ayrı derleniyor, bu yüzden düzeltilmedi.
+
+## Aşama 11 — Reasoning açık mı kapalı mı (aynı kod, 5484e27)
+| Build | Reasoning | Build testi | AB × 3 katı | Kayıplar |
+|---|---|---|---|---|
+| 20261010T163009-382363Z | enabled | 9/13 | 9/13 | 4 çağrıda susma veya kesilme (PUB-09 tek ürün, PUB-11 ×2, PUB-12); PUB-05 A+B not çatışması |
+| 20261010T165437-661845Z | disabled | 11/13 | 9/13 | susma 0. PUB-07 0/3 (tatil yerine son tarih önerildi), PUB-12 0/3 (deneme sayısı), PUB-03 1 (bozuk simülatör mesajında 3. cevap kaçtı), PUB-05 1 (destek iki kez teklif edildi) |
+- Kapalı modda çok ürünlü PUB-11 ve PUB-13 3/3 geçti. Kampanya süresi 549 sn; açık modda 865 sn.
+- Kapalı moddaki hatalar, projenin ilk ölçümündeki (reasoning'siz) hatalarla aynı: PUB-07 ve PUB-12. Deterministikler, kodla düzeltilebilir. Açık moddaki susma ise model bütçesinden kaynaklanıyor ve düzeltilemiyor.
+- Fable danışması: ürün başına düğüm döngüsü kurulmasın; doğrulanmamış platform davranışı çok, grup cevabı yine üç ürünü birden düşündürür. Reasoning kapatılsın, mantık koda taşınsın.
+- Karar (2e46300):
+  - reasoning varsayılan olarak disabled;
+  - müşterinin söylediği gün extraction ile okunuyor (`named_date`); `check_date` kod düğümü takvim, tatil ve son tarih hükmünü NAMED DAY CHECK satırına yazıp değişkeni temizliyor, sonra negotiate'e dönülüyor;
+  - plan "ilk ret → deneme 1 → ret → deneme 2 → ret → DUR" zinciri olarak yazılıyor;
+  - "Bugün bu haftanın son iş günü mü" satırı eklendi;
+  - tarihler müşteriye sözle söyleniyor;
+  - düşünme talimatı yalnızca reasoning açıkken ekleniyor.
+- Ek düzeltmeler: HTTP hatası hiçbir zaman başarı sayılmıyor (9db3e1e); son tarihler farklıysa en erken olan söyleniyor (5484e27).
