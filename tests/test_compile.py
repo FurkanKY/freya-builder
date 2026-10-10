@@ -1,3 +1,4 @@
+import datetime
 import json
 import time
 from pathlib import Path
@@ -140,25 +141,51 @@ def test_named_day_is_checked_in_code_and_cleared():
     wf = compile_workflow(SPEC, API, BRIEFS)
     assert validate_workflow(wf, API) == []
     negotiate = wf["nodes"]["negotiate"]
-    assert negotiate["extraction_schema"][0]["name"] == "named_date"
-    assert negotiate["extraction_schema"][0]["type"] == "date"
+    assert negotiate["extraction_schema"][0]["name"] == "named_day_words"
+    assert negotiate["extraction_schema"][0]["type"] == "string"
     assert [t["target_node"] for t in negotiate["transitions"]] == ["hang_up", "check_date"]
     assert wf["nodes"]["check_date"]["passthrough_default_transition"] == "negotiate"
     assert "{{named_day_facts}}" in negotiate["task_message"]
     products = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0}]
     out = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products)})
     assert out["named_day_facts"] == "No exact day named yet."
-    out = run_facts(wf, dict(out, named_date="2026-10-26"))
-    assert out["named_date"] == "none"
+    out = run_facts(wf, dict(out, named_day_words="Monday the 26th"))
+    assert out["named_day_words"] == "none"
     assert "2026-10-26 Monday: HOLIDAY (bank holiday), NOT a business day; previous business day 2026-10-23 Friday; next business day 2026-10-27 Tuesday; on or before the deadline of p1" in out["named_day_facts"]
-    out = run_facts(wf, dict(out, named_date="2026-11-07"))
+    out = run_facts(wf, dict(out, named_day_words="the seventh of November"))
     assert "2026-11-07 Saturday: weekend, NOT a business day" in out["named_day_facts"]
     assert "AFTER the deadline of p1 (p1 deadline 2026-10-29 Thursday)" in out["named_day_facts"]
-    # A cleared or unreadable date leaves the last check in place and never raises.
-    out = run_facts(wf, dict(out, named_date="someday"))
-    assert out["named_date"] == "none" and "2026-11-07" in out["named_day_facts"]
+    # Unreadable words leave the last check in place and never raise.
+    out = run_facts(wf, dict(out, named_day_words="when my salary comes"))
+    assert out["named_day_words"] == "none" and "2026-11-07" in out["named_day_facts"]
     out = run_facts(wf, dict(out))
     assert "2026-11-07" in out["named_day_facts"]
+    out = run_facts(wf, dict(out, named_day_words="Tuesday the 26th"))
+    assert "The customer said Tuesday, but that date is a Monday" in out["named_day_facts"]
+
+
+def test_day_words_resolve_from_the_call_date_not_the_server_clock():
+    wf = compile_workflow(SPEC, API, BRIEFS)
+    code = wf["nodes"]["check_date"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    scope = {"vars": {"now": "2026-10-14T11:00"}}
+    exec(compile(code, "facts", "exec"), scope)
+    resolve, today = scope["_resolve_day"], datetime.date(2026, 10, 14)  # a Wednesday
+    iso = lambda words: [d.isoformat() for d in resolve(words, today)]
+    assert iso("tomorrow") == ["2026-10-15"]
+    assert iso("the day after tomorrow") == ["2026-10-16"]
+    assert iso("Friday") == ["2026-10-16"]
+    assert iso("next Friday") == ["2026-10-16", "2026-10-23"]
+    assert iso("Friday next week") == ["2026-10-23"]
+    assert iso("Wednesday") == ["2026-10-14", "2026-10-21"]
+    assert iso("the twenty-sixth") == ["2026-10-26"]
+    assert iso("twenty six October") == ["2026-10-26"]
+    assert iso("October 30") == ["2026-10-30"]
+    assert iso("the 5th") == ["2026-11-05"]
+    assert iso("the thirty first") == ["2026-10-31"]
+    assert iso("the first of January") == ["2027-01-01"]
+    assert iso("I can pay 200 then") == []
+    assert iso("I may pay later") == []
+    assert iso("the week after next") == []
 
 
 def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
@@ -170,7 +197,7 @@ def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
     facts = out["account_facts"]
     assert "after the first ask is refused: attempt 1: propose 300 by 2026-10-23 (Friday, 23 October 2026)" in facts
     assert "after attempt 1 is refused: attempt 2: propose 90 by" in facts
-    assert "after attempt 2 is refused: STOP, no more payment proposals for this product" in facts
+    assert "after attempt 2 is refused: STOP, no more payment proposals for p1 (it gets 2 proposals after the first ask" in facts
     assert "attempt 1: attempt 1" not in facts
     assert "Today IS that day." in out["date_facts"]
 
@@ -192,3 +219,17 @@ def test_facts_read_products_flattened_under_the_node_name():
     assert "product_id p1: credit card ending 1234" in out["account_facts"]
     assert "product_id p2: credit card ending 5678" in out["account_facts"]
     assert "on or before the deadline of p1, p2" in out["date_facts"]
+
+
+def test_named_closed_day_carries_the_policy_action_only_within_the_deadline():
+    spec = json.loads(json.dumps(SPEC))
+    spec["calendar"]["closed_day_rule"] = "Offer the next business day"
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0}]
+    base = {"now": "2026-10-21T09:00", "account_products": json.dumps(products)}
+    out = run_facts(wf, dict(base, named_day_words="Monday the twenty sixth"))
+    assert "For this the policy says to offer the next business day: 2026-10-27 (Tuesday, 27 October 2026)" in out["named_day_facts"]
+    out = run_facts(wf, dict(base, named_day_words="Saturday the 7th of November"))
+    assert "AFTER the deadline of p1" in out["named_day_facts"] and "policy says" not in out["named_day_facts"]
+    out = run_facts(wf, dict(base, named_day_words="Tuesday the 27th"))
+    assert "policy says" not in out["named_day_facts"]

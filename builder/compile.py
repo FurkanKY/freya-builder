@@ -12,7 +12,7 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 
 # Variables that are set before or during a call; a body field with one of these names would be baked.
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
-            "account_products", "named_date", "named_day_facts"}
+            "account_products", "named_day_words", "named_day_facts"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -32,6 +32,7 @@ When the customer asks about an offer you already made, answer only the question
 Callers sometimes speak in pieces. If the customer's message is cut off or incomplete (it stops mid-sentence, or is a lone number, word or part of a date or digits that does not answer your question on its own), it is not an answer yet: reply only with a very short prompt such as "Go on." and wait. Do not repeat your question, do not act on the fragment, and do not count it as a refusal or a non-answer. Join the pieces into one answer once it is complete. An answer that already has every part the question needs (a date with day, month and year; the full number of digits) is complete: use it at once, even if it is short or ends abruptly. Numbers said in words are complete as said: "nineteen ninety" is 1990 and "twenty one" is 21. Your reply to a fragment is never empty; say at least "Go on." Never send a tool an answer that is visibly incomplete (fewer digits than asked for, or a date without day, month or year); ask only for the missing part.
 Some customers chat about their day before they answer. A message that only chats, with no answer and no refusal, is unfinished too: acknowledge it in a few words and ask the same question again. It is not a refusal, a decline or a non-answer; only words that evade or refuse the question count as those. If the same question stays unanswered this way three times in a row, apply the policy for a non-answer.
 Every question that asks the customer to pay something is a payment proposal. Make only the proposals the policy lists, in its order, and count each one; never add a proposal of your own in between. A customer's answer that already refuses or accepts a product, also as part of a group such as "the loans" or "none of them", counts as that product's answer to the first ask: continue with that product's next PERSUASION PLAN step and never ask it again for today.
+Products can get different numbers of proposals. Give each product exactly the steps of its own PERSUASION PLAN, never the steps of another product; at its STOP the product is done.
 Use the computed DATE FACTS, ACCOUNT FACTS and NAMED DAY CHECK for every date, weekday, deadline, floor and amount; do not compute them yourself. When the customer names a day, the NAMED DAY CHECK line says what that day is; apply the policy to it.
 Send dates to tools as YYYY-MM-DD and amounts as plain numbers. Say dates to the customer in words (weekday, day and month, such as "Friday, 16 October"), never as digits like 2026-10-16."""
 
@@ -298,20 +299,22 @@ def compile_workflow(spec, api, briefs):
             "task_message": negotiate_task,
             "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools],
             "max_node_turns": 120, "max_turn_transition": "hang_up",
+            # A date-typed extraction resolves "tomorrow" against the server clock, not the call's date (seen live),
+            # so the customer's own words are copied and resolved in code from the call's date.
             **({"extraction_schema": [{
-                "name": "named_date", "type": "date", "min_confidence": 0.6,
-                "description": "The one exact calendar day that the customer names in their LAST message as a day to pay or as a day they ask"
-                               " about, for example 'Monday the 26th', 'next Friday', 'the 30th', 'tomorrow'. Empty when the last message"
-                               " names no exact day or only a vague period such as 'next week', 'the week after next', 'end of the month' or"
-                               " 'when my salary comes'."}]} if DATE_CHECK else {}),
+                "name": "named_day_words", "type": "string", "min_confidence": 0.6,
+                "description": "The customer's own words for the one exact day they name in their LAST message as a day to pay or as a day"
+                               " they ask about, copied as said, for example 'Monday the 26th', 'the thirtieth', '26 October', 'next Friday',"
+                               " 'tomorrow'. Empty when the last message names no exact day or only a vague period such as 'next week',"
+                               " 'the week after next', 'end of the month' or 'when my salary comes'."}]} if DATE_CHECK else {}),
             # Multi-rule date, amount and per-product attempt decisions happen here.
             "reasoning_override": NEGOTIATE_REASONING,
             "transitions": [_closed_transition()] + ([{
                 "target_node": "check_date", "description": "the customer named a day",
                 "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
-                    {"variable": "named_date", "operator": "is_set"},
-                    {"variable": "named_date", "operator": "not_equals", "operand": ""},
-                    {"variable": "named_date", "operator": "not_equals", "operand": "none"}]}]}}] if DATE_CHECK else []),
+                    {"variable": "named_day_words", "operator": "is_set"},
+                    {"variable": "named_day_words", "operator": "not_equals", "operand": ""},
+                    {"variable": "named_day_words", "operator": "not_equals", "operand": "none"}]}]}}] if DATE_CHECK else []),
         },
         **({"check_date": code_node("check_date", "negotiate")} if DATE_CHECK else {}),
         "hang_up": {

@@ -238,20 +238,123 @@ def _day_line(d, today, workdays, holidays, deadlines):
     return text
 
 
+MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+UNITS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+         "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9}
+TEENS = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+         "eighteen": 18, "nineteen": 19, "tenth": 10, "eleventh": 11, "twelfth": 12, "thirteenth": 13, "fourteenth": 14,
+         "fifteenth": 15, "sixteenth": 16, "seventeenth": 17, "eighteenth": 18, "nineteenth": 19}
+TENS = {"twenty": 20, "thirty": 30, "twentieth": 20, "thirtieth": 30}
+ORDINAL_WORDS = set(["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "twentieth", "thirtieth"]
+                    + [w for w in TEENS if w.endswith("th")])
+
+
+def _day_number(tokens):
+    """(day of month, explicit) from digits or English number words; None when no day number is said."""
+    for i, tok in enumerate(tokens):
+        m = re.match(r"^(\d{1,2})(st|nd|rd|th)?$", tok)
+        value, ordinal = None, False
+        if m:
+            value, ordinal = int(m.group(1)), bool(m.group(2))
+        elif tok in TENS:
+            value = TENS[tok]
+            ordinal = tok.endswith("th")
+            if i + 1 < len(tokens) and tokens[i + 1] in UNITS and not ordinal:
+                value += UNITS[tokens[i + 1]]
+                ordinal = tokens[i + 1] in ORDINAL_WORDS
+        elif tok in TEENS or tok in UNITS:
+            value = TEENS.get(tok) or UNITS.get(tok)
+            ordinal = tok in ORDINAL_WORDS
+        if value is None or not 1 <= value <= 31:
+            continue
+        before = tokens[i - 1] if i > 0 else ""
+        near = tokens[max(0, i - 2):i + 4]
+        # Amounts and chat also contain numbers: a day needs an ordinal, "the", or a month next to it.
+        if ordinal or before == "the" or any(w in MONTHS for w in near):
+            return value
+    return None
+
+
+def _resolve_day(words, today):
+    """Candidate dates for the customer's own words, relative to the call's today (not the server clock)."""
+    text = re.sub(r"[^a-z0-9 ]", " ", str(words).lower().replace("-", " "))
+    tokens = text.split()
+    if not tokens:
+        return []
+    joined = " " + " ".join(tokens) + " "
+    if " day after tomorrow " in joined:
+        return [today + datetime.timedelta(days=2)]
+    if " tomorrow " in joined:
+        return [today + datetime.timedelta(days=1)]
+    if " today " in joined or " tonight " in joined:
+        return [today]
+    month = None
+    for i, tok in enumerate(tokens):
+        if tok in MONTHS and (tok != "may" or _day_number(tokens[max(0, i - 3):i + 4])):
+            month = MONTHS.index(tok) + 1
+    day = _day_number(tokens)
+    if day:
+        y, mo = today.year, month or today.month
+        for _ in range(3):
+            try:
+                d = datetime.date(y, mo, day)
+            except Exception:
+                d = None
+            if d and d >= today:
+                return [d]
+            if month:
+                y += 1
+            else:
+                y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+        return []
+    wd = [i for i, d in enumerate(WEEKDAYS) if d.lower() in tokens]
+    if len(wd) != 1:
+        return []
+    coming = today + datetime.timedelta(days=(wd[0] - today.weekday()) % 7)
+    if " after next " in joined:
+        return [coming + datetime.timedelta(days=7)]
+    if " next week " in joined:
+        start = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=7)
+        return [start + datetime.timedelta(days=wd[0])]
+    if " next " in joined:
+        # "next Friday" is the coming one for some callers and the one of next week for others.
+        first = coming if coming > today else coming + datetime.timedelta(days=7)
+        return [first, first + datetime.timedelta(days=7)]
+    if coming == today:
+        return [today, today + datetime.timedelta(days=7)]
+    return [coming]
+
+
 def _named_day(today, workdays, holidays, deadlines):
-    """The day the extraction model read from the customer's last message, checked against the calendar, then cleared."""
-    raw = str(vars.get("named_date") or "").strip()
+    """The customer's words for a day, copied by extraction, resolved and checked against the calendar here, then cleared."""
+    raw = str(vars.get("named_day_words") or "").strip()
     if not raw or raw == "none":
         return
-    # Seen live: writing "" does not clear an extracted variable; "none" is excluded by the transition too.
-    vars["named_date"] = "none"
-    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", raw)
+    vars["named_day_words"] = "none"
     try:
-        day = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        days = _resolve_day(raw, today)
     except Exception:
+        days = []
+    if not days:
         return
-    vars["named_day_facts"] = ("The last exact day the customer named, as read by code: " + _day_line(day, today, workdays, holidays, deadlines)
-                               + ". If the customer named only a vague period, or no day, ignore this line.")
+    lines = [_day_line(d, today, workdays, holidays, deadlines) for d in days]
+    rule = str((_spec().get("calendar") or dict()).get("closed_day_rule") or "none")
+    within = all(days[0] <= dl for _, dl in deadlines) if days else False
+    if len(days) == 1 and days[0] >= today and within and not _is_business(days[0], workdays, holidays):
+        nxt, prv = _next_business(days[0], workdays, holidays), _previous_business(days[0], workdays, holidays)
+        if rule == "next_business_day" and nxt:
+            lines[0] += ". For this the policy says to offer the next business day: " + _label(nxt)
+        elif rule == "previous_business_day" and prv and prv >= today:
+            lines[0] += ". For this the policy says to offer the previous business day: " + _label(prv)
+        elif rule == "ask_again":
+            lines[0] += ". For this the policy says to ask for another day"
+    said = [d for d in WEEKDAYS if re.search(r"\b" + d.lower() + r"\b", raw.lower())]
+    clash = ""
+    if said and len(days) == 1 and WEEKDAYS[days[0].weekday()] not in said:
+        clash = " The customer said " + said[0] + ", but that date is a " + WEEKDAYS[days[0].weekday()] + "; ask which day they mean."
+    vars["named_day_facts"] = ("The day in the customer's last message ('" + raw[:60] + "'), resolved by code from today's date: "
+                               + (" OR ".join(lines) + ". It can mean either day; if it matters, ask which one." if len(lines) > 1 else lines[0] + ".")
+                               + clash + " If the customer named only a vague period, or no day, ignore this line.")
 
 
 def run():
@@ -338,7 +441,8 @@ def run():
             chain = ["after the first ask is refused: attempt 1: " + steps[0]]
             for i in range(1, len(steps)):
                 chain.append("after attempt " + str(i) + " is refused: attempt " + str(i + 1) + ": " + steps[i])
-            chain.append("after attempt " + str(len(steps)) + " is refused: STOP, no more payment proposals for this product; apply the policy for a product without a promise")
+            chain.append("after attempt " + str(len(steps)) + " is refused: STOP, no more payment proposals for " + str(p.get(id_field))
+                         + " (it gets " + str(len(steps)) + (" proposal" if len(steps) == 1 else " proposals") + " after the first ask, even if another product gets more); apply the policy for a product without a promise")
             text += "; PERSUASION PLAN, the complete list of proposals for this product, one step per refusal or non-answer, nothing else in between: " + " | ".join(chain)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)

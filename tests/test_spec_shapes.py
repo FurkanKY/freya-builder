@@ -168,3 +168,11 @@ def test_identity_completion_can_be_a_status_value_and_a_missing_answer_flag_is_
     assert "fully verified" in run_hook(hook, {"ok": True, "status": "verified", "correct": True})
     assert "This answer is correct" in run_hook(hook, {"ok": True, "status": "pending", "correct": True})
     assert "did not say" in run_hook(hook, {"ok": True, "status": "pending"})
+
+
+def test_closed_day_rule_is_normalized_to_a_known_action():
+    for raw, want in (("next_business_day", "next_business_day"), ("Offer the previous working day", "previous_business_day"),
+                      ("ask the customer for another day", "ask_again"), (None, "none"), ("", "none")):
+        spec = json.loads(json.dumps(SPEC))
+        spec["calendar"]["closed_day_rule"] = raw
+        assert normalize_spec(spec, API)["calendar"]["closed_day_rule"] == want

@@ -37,7 +37,8 @@ SCHEMA = """Return exactly this shape:
     "complete_value": "<only if complete_flag is not a boolean: its value that means passed, e.g. verified; otherwise omit>",
     "answer_flag": "<boolean property of the verify_identity response that means this one answer was correct; dotted path if nested. When the names alone must decide: the per-answer flag is named like the check itself (verified, correct, match), the whole-check flag names the overall state (all_verified, passed, complete, identity_confirmed)>"
   },
-  "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}]},
+  "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}],
+               "closed_day_rule": "<what the brief says to do when the customer names a weekend day or holiday that is not after the deadline: next_business_day | previous_business_day | ask_again | none>"},
   "account": {
     "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
     "amount_field": "<field with the amount owed now>", "segment_field": "<product field that selects the band, e.g. days late>",

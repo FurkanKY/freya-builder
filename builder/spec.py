@@ -136,6 +136,10 @@ def normalize_spec(spec, api):
             m = re.search(r"\d{4}-\d{2}-\d{2}", h)
             holidays.append({"date": m.group(0) if m else h, "name": h.replace(m.group(0), "").strip(" :-–()") or "bank holiday" if m else "bank holiday"})
     calendar["holidays"] = holidays
+    rule = str(calendar.get("closed_day_rule") or "").lower()
+    calendar["closed_day_rule"] = ("previous_business_day" if re.search(r"previous|prior|before|earlier", rule) else
+                                   "next_business_day" if re.search(r"next|following|after|later", rule) else
+                                   "ask_again" if re.search(r"ask|another|other|again", rule) else "none")
     spec["calendar"] = calendar
     account = spec.get("account") if isinstance(spec.get("account"), dict) else {}
     types = _product_types(api, account.get("list_field"), account.get("type_field"))
