@@ -12,13 +12,15 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 
 # Variables that are set before or during a call; a body field with one of these names would be baked.
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
-            "account_products", "named_day_words", "named_day_facts"}
+            "account_products", "named_day_words", "named_day_facts", "refused_products", "refusal_counts", "plan_state"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
 NEGOTIATE_REASONING = os.environ.get("BUILDER_AGENT_REASONING", "disabled")
 # A day the customer names is read by extraction and checked against the calendar in code before the reply.
 DATE_CHECK = os.environ.get("BUILDER_DATE_CHECK", "on") != "off"
+# The products the customer refuses are read by extraction and counted per product in code (PROPOSAL COUNT).
+COUNT_CHECK = DATE_CHECK and os.environ.get("BUILDER_COUNT_CHECK", "on") != "off"
 
 TOOL_NAMES = ("verify_identity", "get_account", "create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call")
 
@@ -29,10 +31,11 @@ Tool use: when a rule says to call a tool, CALL the tool; saying you did it is n
 After every tool result, read its what_to_do_next field and either speak to the customer or call the next tool. Never end a turn with nothing.
 Never say that something was recorded, scheduled or transferred unless that tool returned ok true. Before that, do not use words such as "noted", "recorded", "booked" or "set up"; say what you will do next instead.
 When the customer asks about an offer you already made, answer only the question in one short sentence that names it as the offer already made (for example "That is the amount I mentioned.") and stop there: do not say again that you can offer it and do not ask for it again.
-Callers sometimes speak in pieces. If the customer's message is cut off or incomplete (it stops mid-sentence, or is a lone number, word or part of a date or digits that does not answer your question on its own), it is not an answer yet: reply only with a very short prompt such as "Go on." and wait. Do not repeat your question, do not act on the fragment, and do not count it as a refusal or a non-answer. Join the pieces into one answer once it is complete. An answer that already has every part the question needs (a date with day, month and year; the full number of digits) is complete: use it at once, even if it is short or ends abruptly. Numbers said in words are complete as said: "nineteen ninety" is 1990 and "twenty one" is 21. Your reply to a fragment is never empty; say at least "Go on." Never send a tool an answer that is visibly incomplete (fewer digits than asked for, or a date without day, month or year); ask only for the missing part.
+Callers sometimes speak in pieces. If the customer's message is cut off or incomplete (it stops mid-sentence, or is a lone number, word or part of a date or digits that does not answer your question on its own), it is not an answer yet: reply only with a very short prompt such as "Go on." and wait. Do not repeat your question, do not act on the fragment, and do not count it as a refusal or a non-answer. Join the pieces into one answer once it is complete. An answer that already has every part the question needs (a date with day, month and year; the full number of digits) is complete: use it at once, even if it is short, ends abruptly or is followed by a few cut-off words such as "This is"; never reply "Go on." to it. Numbers said in words are complete as said: "nineteen ninety" is 1990 and "twenty one" is 21. Your reply to a fragment is never empty; say at least "Go on." Never send a tool an answer that is visibly incomplete (fewer digits than asked for, or a date without day, month or year); ask only for the missing part.
 Some customers chat about their day before they answer. A message that only chats, with no answer and no refusal, is unfinished too: acknowledge it in a few words and ask the same question again. It is not a refusal, a decline or a non-answer; only words that evade or refuse the question count as those. If the same question stays unanswered this way three times in a row, apply the policy for a non-answer.
 Every question that asks the customer to pay something is a payment proposal. Make only the proposals the policy lists, in its order, and count each one; never add a proposal of your own in between. A customer's answer that already refuses or accepts a product, also as part of a group such as "the loans" or "none of them", counts as that product's answer to the first ask: continue with that product's next PERSUASION PLAN step and never ask it again for today.
-Products can get different numbers of proposals. Give each product exactly the steps of its own PERSUASION PLAN, never the steps of another product; at its STOP the product is done.
+Products can get different numbers of proposals. Give each product exactly the steps of its own PERSUASION PLAN, never the steps of another product; at its STOP the product is done. When a PROPOSAL COUNT is given, it says which proposal comes next for each product; follow it.
+When the customer names one date for several products and it is inside some products' deadlines but after another's, the date stays for the products it fits: say so in the same sentence in which you propose the earlier date for the other product, and read back each product with its own date.
 Use the computed DATE FACTS, ACCOUNT FACTS and NAMED DAY CHECK for every date, weekday, deadline, floor and amount; do not compute them yourself. When the customer names a day, the NAMED DAY CHECK line says what that day is; apply the policy to it.
 Send dates to tools as YYYY-MM-DD and amounts as plain numbers. Say dates to the customer in words (weekday, day and month, such as "Friday, 16 October"), never as digits like 2026-10-16."""
 
@@ -261,6 +264,7 @@ def compile_workflow(spec, api, briefs):
         BRIEF_THINKING if NEGOTIATE_REASONING == "enabled" else "",
         policy.get("after_verification"),
         "ACCOUNT FACTS:\n{{account_facts}}",
+        "PROPOSAL COUNT:\n{{plan_state}}" if COUNT_CHECK else "",
         "NAMED DAY CHECK:\n{{named_day_facts}}" if DATE_CHECK else "",
         "DATE FACTS:\n{{date_facts}}",
     ]))
@@ -306,15 +310,29 @@ def compile_workflow(spec, api, briefs):
                 "description": "The customer's own words for the one exact day they name in their LAST message as a day to pay or as a day"
                                " they ask about, copied as said, for example 'Monday the 26th', 'the thirtieth', '26 October', 'next Friday',"
                                " 'tomorrow'. Empty when the last message names no exact day or only a vague period such as 'next week',"
-                               " 'the week after next', 'end of the month' or 'when my salary comes'."}]} if DATE_CHECK else {}),
+                               " 'the week after next', 'end of the month' or 'when my salary comes'."}] + ([{
+                # Attempt counting across products is the step the phone model gets wrong most; code keeps the count.
+                "name": "refused_products", "type": "string", "min_confidence": 0.6,
+                "description": "The products the customer flatly refuses to pay in their LAST message, as an answer to a question asking"
+                               " them to pay. Name each refused product with the assistant's own words for it, for example 'personal loan',"
+                               " 'credit card', 'car loan and personal loan'. When the customer only says no, name the product or products"
+                               " the assistant's last question asked about, and write 'all' for a plain no to paying all of them today."
+                               " Never write 'the others' or 'the rest': name those products. A product the customer gives a date or an"
+                               " amount for is not refused. 'none' when the last message refuses nothing: it accepts, proposes or asks about"
+                               " a date or an amount, only says the amount is too much, mentions illness, a death, job loss or other hardship,"
+                               " says it is already paid or disputes it, asks a question, only chats, or is cut off."}] if COUNT_CHECK else [])}
+               if DATE_CHECK else {}),
             # Multi-rule date, amount and per-product attempt decisions happen here.
             "reasoning_override": NEGOTIATE_REASONING,
             "transitions": [_closed_transition()] + ([{
-                "target_node": "check_date", "description": "the customer named a day",
+                "target_node": "check_date", "description": "the customer named a day or refused a product",
                 "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
-                    {"variable": "named_day_words", "operator": "is_set"},
-                    {"variable": "named_day_words", "operator": "not_equals", "operand": ""},
-                    {"variable": "named_day_words", "operator": "not_equals", "operand": "none"}]}]}}] if DATE_CHECK else []),
+                    {"variable": v, "operator": "is_set"},
+                    {"variable": v, "operator": "not_equals", "operand": ""},
+                    {"variable": v, "operator": "not_equals", "operand": "none"}] + extra}
+                    for v, extra in [("named_day_words", [])] + ([("refused_products", [
+                        # One product keeps the flow that passes today.
+                        {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])]}}] if DATE_CHECK else []),
         },
         **({"check_date": code_node("check_date", "negotiate")} if DATE_CHECK else {}),
         "hang_up": {

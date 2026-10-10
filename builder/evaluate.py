@@ -23,9 +23,11 @@ def summarize(report, suite):
     return {"suite":suite, "status":"completed", "case_passes":cases, "passed":sum(cases.values()), "total":len(cases), "seconds":report.get("seconds",0), "raw":report}
 
 
-def run_evaluation(agent_id, brief, kit, run_dir, budget, trace, env, only=None, reps=1, style=None, personas=None):
+def run_evaluation(agent_id, brief, kit, run_dir, budget, trace, env, only=None, reps=1, style=None, personas=None, cases_file=None):
     work = Path(run_dir)/"evaluation-kit"
     shutil.copytree(kit, work, dirs_exist_ok=True)
+    # Development variants reuse public customers (the practice server owns their data) with other scripts and checks.
+    if cases_file: shutil.copy(cases_file, work/"public-test-set.json")
     # The runner creates platform personas keyed by text hash; share its map so reruns reuse them.
     personas = Path(personas) if personas else None
     if personas and personas.exists(): shutil.copy(personas, work/".personas.json")

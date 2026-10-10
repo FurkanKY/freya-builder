@@ -357,6 +357,87 @@ def _named_day(today, workdays, holidays, deadlines):
                                + clash + " If the customer named only a vague period, or no day, ignore this line.")
 
 
+NAME_STOP = set(["the", "a", "an", "your", "my", "of", "with", "ending", "in", "on", "number", "account", "product", "for", "and",
+                 "to", "or", "no", "not", "one", "that", "this", "it", "pay", "payment"])
+ALL_WORDS = set(["all", "everything", "every", "none", "neither", "nothing", "any", "anything"])
+
+
+def _tokens(text):
+    out = set()
+    for tok in re.findall(r"[a-z0-9]+", str(text).lower()):
+        out.add(tok[:-1] if len(tok) > 3 and tok.endswith("s") and not tok.endswith("ss") else tok)
+    return out
+
+
+def _refused_ids(words, infos):
+    """Product ids for the customer's words: a token only one product has picks it; a shared one ('loan') picks all its owners."""
+    said = _tokens(words)
+    if not said or not infos:
+        return []
+    owners = dict()
+    for pid, toks in infos:
+        for t in toks:
+            owners.setdefault(t, []).append(pid)
+    distinct = [pid for pid, toks in infos if any(t in said and len(owners[t]) == 1 for t in toks)]
+    hits = list(distinct)
+    for t in said:
+        group = owners.get(t) or []
+        if len(group) > 1 and not any(g in distinct for g in group):
+            hits += [g for g in group if g not in hits]
+    if hits:
+        return [pid for pid, _ in infos if pid in hits]
+    if said & ALL_WORDS or ("both" in said and len(infos) == 2) or len(infos) == 1:
+        return [pid for pid, _ in infos]
+    return []
+
+
+def _count_refusals(plans):
+    """Adds the products the customer refused in the last message to the per-product counts, then clears the words."""
+    try:
+        counts = json.loads(str(vars.get("refusal_counts") or "{}"))
+        counts = counts if isinstance(counts, dict) else dict()
+    except Exception:
+        counts = dict()
+    raw = str(vars.get("refused_products") or "").strip()
+    if raw and raw.lower() not in ("none", "n/a", "null"):
+        vars["refused_products"] = "none"
+        ids = _refused_ids(raw, [(pl[0], pl[4]) for pl in plans])
+        if not ids:
+            # A bare "no" answers the product still being worked on, when exactly one is.
+            open_ids = [pl[0] for pl in plans if 0 < int(counts.get(pl[0]) or 0) <= _total(pl)]
+            ids = open_ids if len(open_ids) == 1 else []
+        for pid in ids:
+            counts[pid] = int(counts.get(pid) or 0) + 1
+    vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
+    return counts
+
+
+def _total(plan):
+    steps, allowed = plan[2], plan[3]
+    return len(steps) if steps else (allowed if allowed is not None else 99)
+
+
+def _plan_state(plans, counts):
+    lines = []
+    for pid, label, steps, allowed, _ in plans:
+        k = int(counts.get(pid) or 0)
+        text = pid + " " + label + ": refused " + str(k) + (" time" if k == 1 else " times")
+        total = len(steps) if steps else allowed
+        if k == 0:
+            text += "; nothing refused yet"
+        elif total is not None and k > total:
+            text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + " and apply the policy for a product without a promise"
+        elif steps:
+            text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
+        else:
+            text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
+        lines.append(text + ".")
+    return ("Refusals counted by code from the customer's answers: the first ask and each later proposal that the customer flatly refused"
+            " or evaded count once for the products refused. Make exactly the next proposal named here, and none after STOP; never"
+            " ask about today again. A product with a recorded promise is done. The policy's own exceptions, such as hardship, come first.\n"
+            + "\n".join(lines))
+
+
 def run():
     spec = _spec()
     workdays, holidays = _calendar(spec)
@@ -406,6 +487,7 @@ def run():
     type_field = acc.get("type_field") or "type"
     rows = []
     product_deadlines = []
+    plans = []
     for index, p in enumerate(products):
         kind = str(p.get(type_field) or "")
         seg_value = _num(p.get(seg))
@@ -426,12 +508,12 @@ def run():
         if floor is not None:
             text += "; floor (" + str(floor_field) + ") " + _money(floor)
         plan = band.get("attempt_plan") if band else None
+        steps = []
         if isinstance(plan, list) and plan:
             tokens = {"amount": _money(p.get(amount_field)), "floor": _money(floor) if floor is not None else "the floor",
                       "deadline": _label(dl) if dl else "the deadline", "next_business_day": _label(nb) if nb else "the next business day",
                       "last_business_day_this_week": _label(lb) if lb else "the last business day of this week",
                       "last_business_day_next_week": _label(lbn) if lbn else "the last business day of next week"}
-            steps = []
             for step in plan:
                 step = str(step)
                 for k, v in tokens.items():
@@ -446,6 +528,12 @@ def run():
             text += "; PERSUASION PLAN, the complete list of proposals for this product, one step per refusal or non-answer, nothing else in between: " + " | ".join(chain)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)
+        spoken = _spoken(_for_type(names, kind), p)
+        try:
+            allowed = int(band.get("persuasion_attempts")) if band else None
+        except Exception:
+            allowed = None
+        plans.append((str(p.get(id_field)), spoken, steps, allowed, (_tokens(spoken) | _tokens(kind.replace("_", " ")) | _tokens(p.get(id_field))) - NAME_STOP))
     deadlines = []
     for index, p in enumerate(products):
         if index < len(product_deadlines) and product_deadlines[index]:
@@ -462,6 +550,9 @@ def run():
     vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
     _named_day(today, workdays, holidays, deadlines)
     count = len(rows)
+    counts = _count_refusals(plans)
+    # One product keeps the flow that passes today: the model counts its own plan.
+    vars["plan_state"] = _plan_state(plans, counts) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
     known = [(name, dl) for name, dl in deadlines if not name.startswith("band ")]
     if len(known) > 1 and len(set(dl for _, dl in known)) > 1:
         # One date named for several products is the multi-product case that needs the most date arithmetic.

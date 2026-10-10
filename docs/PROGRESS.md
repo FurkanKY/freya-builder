@@ -161,3 +161,37 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Düzeltme (4428038): ürünler `*_response.data.<liste>` biçimindeki her anahtardan okunuyor (en dolu kaynak, load_account öncelikli). Testi eklendi.
 - Ayrıca kod düğümünün `named_date=""` yazması kalıcı olmuyor; artık "none" yazılıyor ve geçiş "none"u da dışlıyor.
 - Ders: yerel testler canlı değişken adlarını varsaymıştı. Canlı değişken tablosu (route_evaluated.variable_table) her yeni mekanizmada kontrol edilmeli.
+
+## Aşama 13 — Gün sözcükleri kodda, ürün başına ret sayacı
+- 37acc3b:
+  - date tipli extraction göreli günleri sunucu saatine göre çözüyordu. Artık müşterinin sözcükleri string olarak kopyalanıyor (`named_day_words`) ve kodda çağrının `now` değerine göre çözülüyor;
+  - kapalı gün kuralı spec'e eklendi (`closed_day_rule`);
+  - her ürünün planında STOP kendi adını ve deneme sayısını taşıyor.
+- Build 20261010T174323-377630Z (37acc3b) ölçümleri:
+  - build testi 12/13;
+  - AB × 3 katı 11/13, şimdiye kadarki en iyi sonuç. PUB-05 ve PUB-07 3/3 geçti;
+  - kayıplar: PUB-12 0/3 ve PUB-03 1/3.
+- PUB-12'nin üç çağrısı üç farklı yoldan düştü:
+  1. kişisel krediye tek deneme yapıldı (iki olmalıydı);
+  2. her ürün için "bugün" yeniden soruldu, her üründe bir fazla teklif oldu;
+  3. erken banttaki araç kredisine geç bandın 2. denemesi kopyalandı.
+  Kural metinleri zaten bunları söylüyordu; reasoning'siz model sayımı tutturamıyor.
+- PUB-03: "21 July 1990. This is" mesajı tam bir tarih içerdiği halde "Go on." denildi ve 4. kez doğum tarihi soruldu. FRAME'e eklendi: tam cevabın arkasından gelen kopuk sözcükler cevabı bekletmez.
+- Konuşma tarzı testi (37acc3b, her tarzdan 1 tekrar):
+  - pieces 11/13: PUB-12, ve PUB-13'te kartın 30 Ekim tarihi kredinin 23 Ekim tarihine çekildi;
+  - corrects 12/13: PUB-12.
+  - PUB-13 için FRAME'e eklendi: bir ürüne uyan tarih o üründe kalır; yalnız son tarihi geçen ürüne daha erken tarih önerilir; geri okumada her ürün kendi tarihiyle söylenir.
+- Sayım koda taşındı:
+  - negotiate'te ikinci extraction alanı `refused_products`: son mesajda açıkça reddedilen ürünler, asistanın kullandığı adlarla; düz bir hayır "all" olarak yazılıyor;
+  - kod bu sözcükleri ürün id'lerine eşliyor: tek ürüne ait bir sözcük o ürünü seçiyor, "loan" gibi ortak bir sözcük sahibi olan tüm ürünleri. Ardından ürün başına sayacı (`refusal_counts`) artırıyor, alanı "none"a çeviriyor ve PROPOSAL COUNT satırını (`plan_state`) yazıyor. Bu satırda her ürün için ya sıradaki teklif ("attempt k: …") ya da STOP var;
+  - hiçbir ürünle eşleşmeyen çıplak bir "no", planı süren tek bir ürün varsa o ürüne yazılıyor;
+  - tek ürünlü çağrılarda sayaç kapalı (yönlendirme `product_count != 1` koşuluna bağlı), bugün geçen akış değişmiyor.
+- Fable danışması, benimsenenler:
+  - ürün asistanın sözcükleriyle adlandırılıyor;
+  - kaçamak cevaplar sayılmıyor, yalnız açık retler sayılıyor;
+  - çıplak hayır için yedek kural var;
+  - tek ürün kapsam dışı.
+- Fable danışması, benimsenmeyenler:
+  - "Gün söylendiyse reddi yok say": PUB-12'deki "kartı yarın öderim, kredileri ödemem" cümlesinde gün ile ret birlikte geliyor;
+  - `promised_products` değişkeni: post-hook `vars`'a erişemiyor;
+  - plan zincirinin prompttan çıkarılması: "too much" akışında modelin adımların tamamına ihtiyacı var.

@@ -1,0 +1,192 @@
+[
+ {
+  "id": "PUB-11",
+  "brief": "B",
+  "family": "Multi-product",
+  "level": "medium",
+  "title": "Refuses two late products, pays the early one",
+  "variables": {
+   "first_name": "Sofia",
+   "last_name": "Almeida",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1987-06-03",
+   "phone_last4": "2288"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "2288",
+    "past_due": 220.0,
+    "days_late": 9,
+    "minimum_payment": 66.0
+   },
+   {
+    "type": "personal_loan",
+    "past_due": 640.0,
+    "days_late": 9,
+    "instalment_amount": 213.0
+   },
+   {
+    "type": "car_loan",
+    "past_due": 75.0,
+    "days_late": 3,
+    "instalment_amount": 25.0
+   }
+  ],
+  "script": "Verified. Cannot pay today. Flatly refuses to pay the credit card and the personal loan, whatever is offered. When asked about the car loan, agrees to pay it in full this Friday. Confirms the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p3",
+     "amount": 75.0,
+     "date": "2026-10-16"
+    }
+   ],
+   "notes": [
+    {
+     "product_id": "p1",
+     "reason": "refused"
+    },
+    {
+     "product_id": "p2",
+     "reason": "refused"
+    }
+   ],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "after the first ask, paying today is not asked again for any product",
+   "two attempts on the credit card and two on the personal loan (late band), no more",
+   "one 'refused' note for the credit card and one for the personal loan",
+   "the car loan is promised for 75 on Friday 16 October after a read-back and a confirmation"
+  ]
+ },
+ {
+  "id": "PUB-12",
+  "brief": "B",
+  "family": "Multi-product",
+  "level": "hard",
+  "title": "Refuses all three products",
+  "variables": {
+   "first_name": "Marcus",
+   "last_name": "Bell",
+   "title": "Mr",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1983-10-19",
+   "phone_last4": "4410"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "9015",
+    "past_due": 510.0,
+    "days_late": 16,
+    "minimum_payment": 153.0
+   },
+   {
+    "type": "personal_loan",
+    "past_due": 1320.0,
+    "days_late": 16,
+    "instalment_amount": 440.0
+   },
+   {
+    "type": "car_loan",
+    "past_due": 140.0,
+    "days_late": 7,
+    "instalment_amount": 46.0
+   }
+  ],
+  "script": "Gives the date of birth and the last four digits 4410 correctly. Cannot pay anything today. Flatly refuses to pay any of the three products, whatever is offered.",
+  "expected": {
+   "outcome": "no_promise",
+   "reason": "refused",
+   "promises": [],
+   "notes": [
+    {
+     "product_id": "p1",
+     "reason": "refused"
+    },
+    {
+     "product_id": "p2",
+     "reason": "refused"
+    },
+    {
+     "product_id": "p3",
+     "reason": "refused"
+    }
+   ],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "after the first ask, paying today is not asked again for any product",
+   "two attempts on the credit card and two on the personal loan (late band), one on the car loan (early band), no more",
+   "one 'refused' note for each product"
+  ]
+ },
+ {
+  "id": "PUB-13",
+  "brief": "B",
+  "family": "Multi-product",
+  "level": "hard",
+  "title": "Refuses the card, accepts the loan floor on attempt 2",
+  "variables": {
+   "first_name": "Elena",
+   "last_name": "Rossi",
+   "title": "Ms",
+   "now": "2026-10-14T11:00"
+  },
+  "identity": {
+   "date_of_birth": "1991-01-08",
+   "phone_last4": "6604"
+  },
+  "products": [
+   {
+    "type": "credit_card",
+    "card_last4": "6604",
+    "past_due": 300.0,
+    "days_late": 4,
+    "minimum_payment": 90.0
+   },
+   {
+    "type": "personal_loan",
+    "past_due": 900.0,
+    "days_late": 20,
+    "instalment_amount": 300.0
+   }
+  ],
+  "script": "Verified. Cannot pay today. Flatly refuses to pay the credit card, whatever is offered. For the personal loan, refuses the first offer, then accepts when offered 300 on Friday 23 October. Confirms the read-back.",
+  "expected": {
+   "outcome": "promise",
+   "reason": null,
+   "promises": [
+    {
+     "product_id": "p2",
+     "amount": 300.0,
+     "date": "2026-10-23"
+    }
+   ],
+   "notes": [
+    {
+     "product_id": "p1",
+     "reason": "refused"
+    }
+   ],
+   "callbacks": [],
+   "transfers": []
+  },
+  "checks": [
+   "after the first ask, paying today is not asked again for any product",
+   "one attempt on the credit card (early band), no more, then a 'refused' note for it",
+   "the personal loan gets its full amount first and 300 on 23 October as its second attempt, which is promised after a read-back and a confirmation"
+  ]
+ }
+]

@@ -202,6 +202,61 @@ def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
     assert "Today IS that day." in out["date_facts"]
 
 
+def test_refusals_are_counted_per_product_in_code():
+    spec = json.loads(json.dumps(SPEC))
+    step1 = "attempt 1: propose <last_business_day_this_week> for <amount>"
+    spec["account"]["bands"] = [
+        {"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""},
+         "persuasion_attempts": 1, "attempt_plan": [step1]},
+        {"name": "late", "min": 11, "max": 45, "deadline": {"type": "business_days_after_today", "count": 7, "date": ""},
+         "persuasion_attempts": 2, "attempt_plan": [step1, "attempt 2: propose <floor> on <deadline>"]}]
+    wf = compile_workflow(spec, API, BRIEFS)
+    assert validate_workflow(wf, API) == []
+    negotiate = wf["nodes"]["negotiate"]
+    assert [f["name"] for f in negotiate["extraction_schema"]] == ["named_day_words", "refused_products"]
+    assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == ["named_day_words", "refused_products"]
+    assert "{{plan_state}}" in negotiate["task_message"]
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
+                {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
+                {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products)})
+    assert "p2 personal loan: refused 0 times; nothing refused yet." in out["plan_state"]
+    # "I'll pay the card tomorrow, not the personal loan or the car loan": the first ask is refused for the two loans.
+    out = run_facts(wf, dict(out, refused_products="the personal loan or the car loan"))
+    assert out["refused_products"] == "none"
+    assert "p1 credit card ending 9015: refused 0 times" in out["plan_state"]
+    assert "p2 personal loan: refused 1 time -> next proposal for p2: attempt 1: propose 2026-10-16 (Friday, 16 October 2026) for 1320." in out["plan_state"]
+    assert "p3 car loan: refused 1 time -> next proposal for p3: attempt 1: propose 2026-10-16 (Friday, 16 October 2026) for 140." in out["plan_state"]
+    # The same words are not counted twice when the next message refuses nothing.
+    out = run_facts(wf, dict(out))
+    assert '"p2": 1' in out["refusal_counts"]
+    out = run_facts(wf, dict(out, refused_products="personal loan"))
+    assert "p2 personal loan: refused 2 times -> next proposal for p2: attempt 2: propose 440 on 2026-10-23" in out["plan_state"]
+    out = run_facts(wf, dict(out, refused_products="Personal Loan"))
+    assert "p2 personal loan: refused 3 times -> STOP: its 2 proposals after the first ask are used; make no more payment proposals for p2" in out["plan_state"]
+    out = run_facts(wf, dict(out, refused_products="car loan"))
+    assert "p3 car loan: refused 2 times -> STOP: its 1 proposal after the first ask is used" in out["plan_state"]
+    assert "p1 credit card ending 9015: refused 0 times" in out["plan_state"]
+    # Group words: a shared word picks every product that has it, 'all' picks every product, 'the others' nothing.
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refused_products": "the loans"})
+    assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
+    out = run_facts(wf, dict(out, refused_products="all of them"))
+    assert json.loads(out["refusal_counts"]) == {"p1": 1, "p2": 2, "p3": 2}
+    out = run_facts(wf, dict(out, refused_products="the others"))
+    assert json.loads(out["refusal_counts"]) == {"p1": 1, "p2": 2, "p3": 2} and out["refused_products"] == "none"
+    out = run_facts(wf, dict(out, refused_products="the card ending 9015"))
+    assert json.loads(out["refusal_counts"])["p1"] == 2
+    # A bare "no" goes to the one product still in its plan, and to none when several are.
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refusal_counts": json.dumps({"p2": 1, "p3": 2}), "refused_products": "no"})
+    assert json.loads(out["refusal_counts"]) == {"p2": 2, "p3": 2}
+    out = run_facts(wf, dict(out, refusal_counts=json.dumps({"p2": 1, "p3": 1}), refused_products="no"))
+    assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
+    # One product keeps the model's own counting and the counter stays out of its routing.
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products[:1]), "refused_products": "credit card"})
+    assert out["plan_state"].startswith("One product:")
+    assert {"variable": "product_count", "operator": "not_equals", "operand": "1"} in negotiate["transitions"][1]["condition"]["conditions"][1]["conditions"]
+
+
 def test_facts_read_products_flattened_under_the_node_name():
     # Seen live: the api_request result is flattened as load_account_response.data.products.N.field and
     # the response_mapping variable is absent.
