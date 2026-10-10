@@ -511,12 +511,62 @@ def _count_refusals(plans, day_named=False, named_date=None):
     return counts, changed
 
 
+def _var(key):
+    """A tool result variable, flattened with dots as the engine keeps it (seen live) or nested."""
+    if key in vars:
+        return vars.get(key)
+    node = vars
+    for part in key.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    return node
+
+
+def _recorded(ids):
+    """Per product, the tools that already succeeded for it in this call, e.g. {"p2": ["add_note"]}. The engine keeps only each
+    tool's last arguments (<tool>_args.<field>, seen live), so every run adds what it sees to a list kept in a variable.
+    Seen live: a note written when a product reached STOP was written again by the closing node."""
+    try:
+        seen = json.loads(str(vars.get("recorded_calls") or "{}"))
+        seen = seen if isinstance(seen, dict) else dict()
+    except Exception:
+        seen = dict()
+    args = dict()
+    for key in list(vars.keys()):
+        m = re.match(r"^(\w+?)_args\.\w+$", str(key))
+        if m:
+            args.setdefault(m.group(1), []).append(vars.get(key))
+        m = re.match(r"^(\w+?)_args$", str(key))
+        if m and isinstance(vars.get(key), dict):
+            args.setdefault(m.group(1), []).extend(vars.get(key).values())
+    for tool, values in args.items():
+        ok = str(_var(tool + "_response.data.ok") or "").strip().lower()
+        code = str(_var(tool + "_status_code") or _var(tool + "_response.status_code") or "")
+        if ok in ("false", "0", "no") or (not ok and not code.startswith("2")):
+            continue
+        for value in values:
+            pid = str(value).strip()
+            if pid in ids and tool not in seen.get(pid, []):
+                seen.setdefault(pid, []).append(tool)
+    vars["recorded_calls"] = json.dumps(seen, sort_keys=True)
+    return seen
+
+
+def _already(tools):
+    """What a DONE product's line says about the tools already done for it; empty when none."""
+    tools = [t for t in tools or [] if t != "create_promise"]
+    if not tools:
+        return ""
+    return (" Already done for it in this call: " + ", ".join(tools) + " succeeded; do not call " + ", ".join(tools)
+            + " for it again.")
+
+
 def _total(plan):
     steps, allowed = plan[2], plan[3]
     return len(steps) if steps else (allowed if allowed is not None else 99)
 
 
-def _plan_state(plans, counts, changed=(), own=(), details=None):
+def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None):
+    recorded = recorded or dict()
     lines = []
     now = []
     pending, unasked, stopped, offered = [], [], [], []
@@ -524,7 +574,9 @@ def _plan_state(plans, counts, changed=(), own=(), details=None):
         k = int(counts.get(pid) or 0)
         text = pid + " " + label + ": refused " + str(k) + (" time" if k == 1 else " times")
         total = len(steps) if steps else allowed
-        if k == 0 and pid in own:
+        if k == 0 and pid in own and "create_promise" in (recorded.get(pid) or []):
+            text += "; its promise is already recorded in this call: do not read it back or record it again"
+        elif k == 0 and pid in own:
             offered.append(pid + " " + label)
             text += "; the customer gave a day or an amount for it: handle that under the date and amount rules; its plan starts only if the customer then refuses"
         elif k == 0:
@@ -533,6 +585,8 @@ def _plan_state(plans, counts, changed=(), own=(), details=None):
         elif total is not None and k > total:
             stopped.append(pid)
             text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + ", not its floor and not another date, and apply the policy for a product without a promise"
+            if _already(recorded.get(pid)):
+                text += "." + _already(recorded.get(pid)).rstrip(".")
             if pid in changed:
                 # Seen live: after the last allowed full-amount proposal the model still offered the floor.
                 # No figure inside a prohibition: a weak model repeats the number it reads.
@@ -573,26 +627,36 @@ def _closing_step(offered, details=None):
             " products without a promise, then close the call.")
 
 
-def _wrap_up(plans, counts, own, owed=None, details=None):
+def _wrap_up(plans, counts, own, owed=None, details=None, recorded=None):
     """(True, product lines) when no product has a proposal left: each is at STOP or has a day or amount the customer gave,
-    and at least one is at STOP. The workflow then leaves the persuasion plans behind for a closing node."""
-    lines, stopped, offered = [], 0, []
+    and at least one is at STOP. The workflow then leaves the persuasion plans behind for a closing node.
+    `recorded` (from _recorded) keeps a promise or a note already written out of the steps still to do."""
+    recorded = recorded or dict()
+    lines, stopped, offered, promised = [], 0, [], []
     for pid, label, steps, allowed, _, floor in plans:
         k = int(counts.get(pid) or 0)
-        if k == 0 and pid in own:
+        if k == 0 and pid in own and "create_promise" in (recorded.get(pid) or []):
+            promised.append(pid)
+            lines.append(pid + " " + label + ": its promise is already recorded in this call (create_promise succeeded): do not read it"
+                         " back or record it again.")
+        elif k == 0 and pid in own:
             offered.append(pid + " " + label)
             lines.append(pid + " " + label + (owed or dict()).get(pid, "") + ": the customer offered a day or an amount for it. Settle it under the date and amount rules,"
                          " read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
         elif k > _total((pid, label, steps, allowed)):
             stopped += 1
             lines.append(pid + " " + label + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date"
-                         " for it. Apply the policy for a product without a promise.")
+                         " for it. Apply the policy for a product without a promise." + _already(recorded.get(pid)))
         else:
             return False, "", ""
-    if not stopped or not offered:
+    if not stopped or not (offered or promised):
         # Every product refused: the negotiate node's closing step has passed live; the closing node adds nothing there.
         return False, "", ""
-    step = _closing_step(offered, details) + (" If the customer already confirmed, do the next of these steps instead." if offered else "")
+    if offered:
+        step = _closing_step(offered, details) + " If the customer already confirmed, do the next of these steps instead."
+    else:
+        step = ("NEXT STEP: no product has a proposal left and every promise the customer gave is recorded. Your next message proposes"
+                " no amount and no date: do the remaining closing steps in order, without repeating a tool call already done.")
     return True, ("\n".join(lines) + "\nWhen every product has its promise, or what the policy prescribes for a product without one,"
                   " close the call as the CLOSING TABLE says.\n" + step), step
 
@@ -644,6 +708,7 @@ def run():
     amount_field = acc.get("amount_field") or "past_due"
     id_field = acc.get("id_field") or "product_id"
     type_field = acc.get("type_field") or "type"
+    recorded = _recorded([str(p.get(id_field)) for p in products])
     rows = []
     done_rows = []
     owed = dict()
@@ -667,7 +732,7 @@ def run():
         text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(_for_type(names, kind), p)
         # A product at STOP is shown without its floor, plan and raw record: seen live, the model offered the floor it saw.
         done_rows.append(text + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date for it."
-                         " Apply the policy for a product without a promise.")
+                         " Apply the policy for a product without a promise." + _already(recorded.get(str(p.get(id_field)))))
         text += "; amount owed now (" + amount_field + ") " + _money(p.get(amount_field))
         text += "; " + seg + " " + str(p.get(seg))
         if band:
@@ -759,12 +824,12 @@ def run():
             else:
                 text = ("the day the customer gave, " + _label(day) + ", is not accepted as it is (calendar: " + line
                         + "); the read-back uses the day the date rules give for it, and " + text)
-        if pid in own and accepted:
+        if pid in own and (accepted or "create_promise" in (recorded.get(pid) or [])):
             settled.append(pid)
         details[pid + " " + label] = text
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts, changed, own, details) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
-    done, wrap, step = _wrap_up(plans, counts, settled, owed, details) if len(plans) > 1 else (False, "", "")
+    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    done, wrap, step = _wrap_up(plans, counts, settled, owed, details, recorded) if len(plans) > 1 else (False, "", "")
     vars["negotiation_done"] = "yes" if done else "no"
     vars["wrap_up_facts"] = wrap or "Not in the closing phase."
     vars["wrap_up_step"] = step or "Not in the closing phase."

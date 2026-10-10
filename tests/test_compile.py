@@ -495,3 +495,49 @@ def test_a_day_the_policy_does_not_accept_is_not_read_back():
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     assert json.loads(out["refusal_counts"]) == {"p2": 3}
     assert out["negotiation_done"] == "no" and "is not accepted as it is" in out["plan_state"]
+
+
+def test_a_tool_call_already_done_is_not_asked_for_again():
+    # PUB-12 as seen live: the personal loan's note was written at its STOP, and the closing node wrote it again.
+    spec = json.loads(json.dumps(SPEC))
+    step1 = "attempt 1: propose <last_business_day_this_week> for <amount>"
+    spec["account"]["bands"] = [
+        {"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""},
+         "persuasion_attempts": 1, "attempt_plan": [step1]},
+        {"name": "late", "min": 11, "max": 45, "deadline": {"type": "business_days_after_today", "count": 7, "date": ""},
+         "persuasion_attempts": 2, "attempt_plan": [step1, "attempt 2: propose <floor> on <deadline>"]}]
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
+                {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
+                {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
+    out = run_facts(wf, dict(base, named_day_words="tomorrow", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
+    out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    assert out["recorded_calls"] == "{}"
+    # The engine's variable table after the note, as seen live: only the last call's arguments, flattened with dots.
+    note = {"add_note_args.product_id": "p2", "add_note_args.reason": "refused", "add_note_response.status": "success",
+            "add_note_response.data.ok": "true", "add_note_status_code": 200, "add_note_success_count": 1}
+    out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan", **note))
+    assert json.loads(out["recorded_calls"]) == {"p2": ["add_note"]}
+    assert out["negotiation_done"] == "yes"
+    rows = dict((line.split(":")[0], line) for line in out["wrap_up_facts"].splitlines())
+    assert rows["p2 personal loan"].endswith("Already done for it in this call: add_note succeeded; do not call add_note for it again.")
+    assert "Already done" not in rows["p3 car loan"]
+    assert "Already done for it in this call: add_note succeeded" in out["account_facts"].split("\n")[2]
+    assert "except a product whose line below says it is already done" in wf["nodes"]["wrap_up"]["task_message"]
+    # A later call that failed adds nothing; what was recorded stays recorded.
+    failed = {"add_note_args.product_id": "p3", "add_note_response.data.ok": "false", "add_note_status_code": 200}
+    out = run_facts(wf, dict(out, **failed))
+    assert json.loads(out["recorded_calls"]) == {"p2": ["add_note"]}
+    # The card's promise recorded before the loans were done: the closing node does not read it back again.
+    promise = {"create_promise_args.product_id": "p1", "create_promise_args.amount": 510, "create_promise_response.data.ok": "true",
+               "create_promise_status_code": 200}
+    out = run_facts(wf, dict(out, **promise))
+    assert json.loads(out["recorded_calls"]) == {"p1": ["create_promise"], "p2": ["add_note"]}
+    assert out["negotiation_done"] == "yes" and "read-back" not in out["wrap_up_step"]
+    assert out["wrap_up_step"].startswith("NEXT STEP: no product has a proposal left and every promise the customer gave is recorded.")
+    assert "p1 credit card ending 9015: its promise is already recorded" in out["wrap_up_facts"]
+    # Nested, as the engine might hand it over: read as well.
+    nested = run_facts(wf, dict(base, add_note_args={"product_id": "p3"}, add_note_response={"data": {"ok": True}}))
+    assert json.loads(nested["recorded_calls"]) == {"p3": ["add_note"]}
