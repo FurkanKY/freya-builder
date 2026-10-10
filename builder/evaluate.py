@@ -69,3 +69,32 @@ def run_evaluation(agent_id, brief, kit, run_dir, budget, trace, env, only=None,
     result=summarize(json.loads(output.read_text()),suite)
     trace.emit("test_end",agent_id=agent_id,passed=result["passed"],total=result["total"],seconds=round(time.monotonic()-start,1),suite=suite)
     return result
+
+
+def transcript_digest(messages, limit=6000):
+    """Conversation turns and bank tool calls only; drops engine events and embedded code."""
+    lines = []
+    for m in messages or []:
+        role, text = m.get("role"), m.get("message") or m.get("content") or ""
+        if role in ("assistant", "user", "bot"):
+            lines.append(f"{role.upper()}: {text}")
+            continue
+        try:
+            event = json.loads(text) if isinstance(text, str) and text.startswith("{") else {}
+        except ValueError:
+            event = {}
+        name = event.get("function")
+        if not name or name in ("code_exec", "end_call"):
+            continue
+        if event.get("event") == "function_call_start":
+            body = (event.get("args") or {}).get("body")
+            lines.append(f"TOOL CALL {name if name != 'api_call' else 'get_account'}: {json.dumps(body)}")
+        elif event.get("event") == "function_call_complete":
+            data = (event.get("result") or {}).get("data")
+            if isinstance(data, dict):
+                data = {k: v for k, v in data.items() if k != "what_to_do_next"}
+            lines.append(f"TOOL RESULT {name if name != 'api_call' else 'get_account'}: {json.dumps(data)[:400]}")
+        elif event.get("event") == "function_call_error":
+            lines.append(f"TOOL ERROR {name}: {str(event.get('error'))[:300]}")
+    text = "\n".join(lines)
+    return text if len(text) <= limit else text[:limit] + "\n[truncated]"

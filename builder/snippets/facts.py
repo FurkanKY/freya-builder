@@ -14,8 +14,8 @@ def _spec():
         return dict()
 
 
-def _today():
-    raw = str(vars.get("now") or "").strip()
+def _today(spec):
+    raw = str(vars.get(spec.get("now_variable") or "now") or "").strip()
     try:
         return datetime.datetime.fromisoformat(raw[:16])
     except Exception:
@@ -150,7 +150,7 @@ def _spoken(template, product):
 def run():
     spec = _spec()
     workdays, holidays = _calendar(spec)
-    now = _today()
+    now = _today(spec)
     if now is None:
         vars["date_facts"] = "The current date is unknown. Ask nothing about dates you cannot check; say you cannot confirm dates."
         vars["account_facts"] = vars.get("account_facts") or "Account facts are not available."

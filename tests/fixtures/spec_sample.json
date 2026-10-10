@@ -1,6 +1,7 @@
 {
  "language": "English",
  "call_variables": ["customer_id", "first_name", "last_name", "title", "now"],
+ "now_variable": "now",
  "opening_line": "Hello, this is the digital assistant of Sample Bank, and this call is recorded. Am I speaking with {{title}} {{last_name}}?",
  "identity": {"questions": [{"field": "date_of_birth", "ask": "Could you tell me your date of birth?", "answer_format": "YYYY-MM-DD"}, {"field": "phone_last4", "ask": "And the last four digits of your phone number?", "answer_format": "four digits"}], "complete_flag": "all_verified"},
  "calendar": {"business_weekdays": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"], "holidays": [{"date": "2026-10-26", "name": "bank holiday"}]},

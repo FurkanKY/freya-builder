@@ -28,6 +28,7 @@ SCHEMA = """Return exactly this shape:
  "spec": {
   "language": "<language the agent speaks>",
   "call_variables": ["<every call variable the brief says each call starts with>"],
+  "now_variable": "<the call variable holding the current date and time that all date rules use>",
   "opening_line": "<the exact first sentence(s) the agent says, satisfying the opening rules; may use {{var}} of call_variables only>",
   "identity": {
     "questions": [{"field": "<verify_identity field enum value>", "ask": "<how to ask it>", "answer_format": "<format the tool needs and how to convert what callers say>"}],
@@ -108,6 +109,8 @@ def validate_spec(spec, api):
     if issues:
         return issues
     call_vars = set(spec.get("call_variables") or [])
+    if spec.get("now_variable") not in call_vars:
+        issues.append("now_variable must name one of call_variables (the current date and time)")
     for name in re.findall(r"\{\{\s*([^}]+?)\s*\}\}", spec["opening_line"]):
         if name not in call_vars:
             issues.append(f"opening_line uses {name}, which is not a call variable")

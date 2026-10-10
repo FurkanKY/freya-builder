@@ -17,7 +17,7 @@ from dotenv import dotenv_values
 from .runtime import Budget, Trace, digest, load_inputs, validate_workflow, write_json, select_candidate, walk
 from .generate import generate
 from .freya_client import Client
-from .evaluate import assert_public_suite, run_evaluation
+from .evaluate import assert_public_suite, run_evaluation, transcript_digest
 
 ROOT=Path(__file__).resolve().parent.parent
 KIT=ROOT/"vendor/kit-v3"
@@ -101,7 +101,7 @@ async def execute(a):
                 for row in raw.get("rows",[]):
                     if not row["pass"]:
                         call=client.call(row["call_id"]) if row.get("call_id") else {}
-                        evidence.append({"case":row["id"],"failed":row["failed"],"messages":call.get("messages",[])})
+                        evidence.append({"case":row["id"],"failed":row["failed"],"transcript":transcript_digest(call.get("messages",[]))})
                 repaired=await generate(inputs,KIT,budget,trace,model,run_dir,previous=candidate,feedback=evidence)
                 errors=validate_workflow(repaired["workflow"],inputs["api"])
                 if errors: trace.emit("challenger_rejected",errors=errors)

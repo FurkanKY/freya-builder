@@ -44,3 +44,19 @@ def test_ab_suite_requires_both_public_briefs(tmp_path):
     assert_public_suite([{"text":"a"},{"text":"b"}], "AB", tmp_path) is None
     with pytest.raises(ValueError):
         assert_public_suite([{"text":"a"}], "AB", tmp_path)
+
+
+def test_transcript_digest_keeps_turns_and_bank_calls_only():
+    import json
+    from builder.evaluate import transcript_digest
+    ev = lambda **e: {"role": "system", "message": json.dumps(e)}
+    messages = [
+        ev(event="function_call_start", function="code_exec", args={"code": "SPEC_JSON = 'huge'"}),
+        {"role": "assistant", "message": "Hello"},
+        ev(event="function_call_start", function="create_promise", args={"body": {"amount": 5}}),
+        ev(event="function_call_error", function="create_promise", error="service unavailable"),
+        ev(event="function_call_complete", function="create_promise", result={"data": {"ok": True, "what_to_do_next": "x"}}),
+    ]
+    text = transcript_digest(messages)
+    assert "SPEC_JSON" not in text and "what_to_do_next" not in text
+    assert "ASSISTANT: Hello" in text and "TOOL ERROR create_promise: service unavailable" in text

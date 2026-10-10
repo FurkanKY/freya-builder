@@ -75,3 +75,10 @@ def test_spec_validation_rejects_fields_outside_the_api():
     assert any("mothers_maiden_name" in i for i in issues)
     assert any("balance" in i for i in issues)
     assert any("nickname" in i for i in issues)
+
+
+def test_facts_read_the_spec_named_clock_variable():
+    spec = json.loads(json.dumps(SPEC)); spec["now_variable"] = "call_time"; spec["call_variables"].append("call_time")
+    wf = compile_workflow(spec, API, BRIEFS)
+    out = run_facts(wf, {"call_time": "2026-10-21T09:00", "now": "1999-01-01T00:00"})
+    assert out["date_facts"].startswith("Now: 2026-10-21")
