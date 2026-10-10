@@ -320,9 +320,18 @@ def run():
         d = d + datetime.timedelta(days=1)
     lines.append("Calendar, one line per day from today. When the customer names a day, find its line and apply the policy to what the line says:\n" + "\n".join(days))
     vars["date_facts"] = "\n".join(lines)
+    count = len(rows)
+    known = [(name, dl) for name, dl in deadlines if not name.startswith("band ")]
+    if len(known) > 1 and len(set(dl for _, dl in known)) > 1:
+        # One date named for several products is the multi-product case that needs the most date arithmetic.
+        first = min(dl for _, dl in known)
+        binding = [name for name, dl in known if dl == first]
+        rows.append("Deadlines differ: the earliest is " + _label(first) + " (" + ", ".join(binding) + "). One date for all products"
+                    " is on or before every product's deadline only if it is on or before " + first.isoformat() + "; "
+                    + "; ".join(name + " deadline " + dl.isoformat() for name, dl in known) + ".")
     if rows:
         vars["account_facts"] = "Late products, in the order the bank returned them:\n" + "\n".join(rows)
-        vars["product_count"] = str(len(rows))
+        vars["product_count"] = str(count)
         vars["facts_state"] = "ready"
     else:
         vars["account_facts"] = "The product list could not be read by code. Use the get_account result in the conversation history."

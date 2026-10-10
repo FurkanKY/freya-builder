@@ -120,3 +120,17 @@ def test_spec_accepts_a_nested_product_list():
     assert not [i for i in validate_spec(spec, api) if "list_field" in i or "product field" in i]
     wf = compile_workflow(spec, api, BRIEFS)
     assert wf["nodes"]["load_account"]["response_mapping"][0]["path"] == "data.customer.products"
+
+
+def test_facts_name_the_earliest_of_differing_deadlines():
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["bands"].append({"name": "late", "min": 11, "max": 90, "deadline": {"type": "business_days_after_today", "count": 2, "date": ""}, "persuasion_attempts": 2})
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0},
+                {"product_id": "p2", "type": "credit_card", "card_last4": "5678", "past_due": 200.0, "days_late": 30, "minimum_payment": 60.0}]
+    out = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products)})
+    assert "Deadlines differ: the earliest is 2026-10-23 (Friday, 23 October 2026) (p2)." in out["account_facts"]
+    assert "p1 deadline 2026-10-29; p2 deadline 2026-10-23." in out["account_facts"]
+    assert out["product_count"] == "2"
+    same = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products[:1] + [dict(products[1], days_late=5)])})
+    assert "Deadlines differ" not in same["account_facts"]
