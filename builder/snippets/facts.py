@@ -364,6 +364,7 @@ def _named_day(today, workdays, holidays, deadlines):
 NAME_STOP = set(["the", "a", "an", "your", "my", "of", "with", "ending", "in", "on", "number", "account", "product", "for", "and",
                  "to", "or", "no", "not", "one", "that", "this", "it", "pay", "payment"])
 ALL_WORDS = set(["all", "everything", "every", "none", "neither", "nothing", "any", "anything"])
+EXCEPT_WORDS = set(["except", "but", "apart", "besides", "other", "than", "excluding", "without"])
 
 
 def _tokens(text):
@@ -388,6 +389,9 @@ def _refused_ids(words, infos):
         group = owners.get(t) or []
         if len(group) > 1 and not any(g in distinct for g in group):
             hits += [g for g in group if g not in hits]
+    if hits and said & ALL_WORDS and said & EXCEPT_WORDS:
+        # "all except the card" refuses the others.
+        return [pid for pid, _ in infos if pid not in hits]
     if hits:
         return [pid for pid, _ in infos if pid in hits]
     if said & ALL_WORDS or ("both" in said and len(infos) == 2) or len(infos) == 1:
@@ -395,25 +399,59 @@ def _refused_ids(words, infos):
     return []
 
 
+NO_VALUE = set(["", "none", "nothing", "n/a", "na", "null", "nil", "no refusal", "nothing refused", "none refused", "not applicable", "no product", "no products"])
+
+
+def _no_value(raw):
+    """True for the extraction's 'nothing' sentinel in any spelling ('None.', 'nothing', "'none'", 'none (accepted)')."""
+    key = " ".join(re.findall(r"[a-z/]+", str(raw or "").lower()))
+    if key in NO_VALUE:
+        return True
+    head = key.split(" ")
+    return head[0] in ("none", "nothing") and (len(head) < 2 or head[1] != "of")
+
+
 def _count_refusals(plans):
-    """Adds the products the customer refused in the last message to the per-product counts, then clears the words."""
+    """Counts, per product, the refused proposals the assistant actually made, then clears the extracted words.
+
+    The first ask covers every product once: a product refused in answer to it gets count 1, never more. After that a
+    refusal adds one only for the products the assistant's last message proposed, so a repeated "none of them" during
+    one product's proposal does not use up the proposals of products not offered yet. Returns (counts, changed ids).
+    """
     try:
         counts = json.loads(str(vars.get("refusal_counts") or "{}"))
         counts = counts if isinstance(counts, dict) else dict()
     except Exception:
         counts = dict()
+    infos = [(pl[0], pl[4]) for pl in plans]
+    all_ids = [pl[0] for pl in plans]
     raw = str(vars.get("refused_products") or "").strip()
-    if raw and raw.lower() not in ("none", "n/a", "null"):
-        vars["refused_products"] = "none"
-        ids = _refused_ids(raw, [(pl[0], pl[4]) for pl in plans])
+    asked_raw = str(vars.get("proposed_products") or "").strip()
+    asked = [] if _no_value(asked_raw) else _refused_ids(asked_raw, infos)
+    changed = []
+    if not _no_value(raw):
+        ids = _refused_ids(raw, infos)
         if not ids:
-            # A bare "no" answers the product still being worked on, when exactly one is.
+            # A bare "no" answers what the assistant just proposed, else the one product still being worked on.
             open_ids = [pl[0] for pl in plans if 0 < int(counts.get(pl[0]) or 0) <= _total(pl)]
-            ids = open_ids if len(open_ids) == 1 else []
+            ids = asked or (open_ids if len(open_ids) == 1 else [])
+        first_ask = not any(int(counts.get(pid) or 0) for pid in all_ids) and (not asked or set(asked) == set(all_ids))
         for pid in ids:
-            counts[pid] = int(counts.get(pid) or 0) + 1
+            k = int(counts.get(pid) or 0)
+            if first_ask:
+                new = max(k, 1)
+            elif asked:
+                # A product proposed for the first time after the first ask is at least on attempt 1.
+                new = max(k, 1) + 1 if pid in asked else k
+            else:
+                new = k + 1
+            if new != k:
+                counts[pid] = new
+                changed.append(pid)
+    vars["refused_products"] = "none"
+    vars["proposed_products"] = "none"
     vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
-    return counts
+    return counts, changed
 
 
 def _total(plan):
@@ -421,9 +459,10 @@ def _total(plan):
     return len(steps) if steps else (allowed if allowed is not None else 99)
 
 
-def _plan_state(plans, counts):
+def _plan_state(plans, counts, changed=()):
     lines = []
-    for pid, label, steps, allowed, _ in plans:
+    now = []
+    for pid, label, steps, allowed, _, floor in plans:
         k = int(counts.get(pid) or 0)
         text = pid + " " + label + ": refused " + str(k) + (" time" if k == 1 else " times")
         total = len(steps) if steps else allowed
@@ -431,14 +470,21 @@ def _plan_state(plans, counts):
             text += "; nothing refused yet"
         elif total is not None and k > total:
             text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + " and apply the policy for a product without a promise"
+            if pid in changed:
+                # Seen live: after the last allowed full-amount proposal the model still offered the floor.
+                now.append("The customer has just refused the last proposal allowed for " + pid + " " + label + ". It is done: do not offer it anything"
+                           " more, not " + ("its floor " + floor + ", not " if floor else "") + "a smaller amount and not another date. Apply the policy"
+                           " for a product without a promise and go on with the next product that still has a proposal left, or with the closing.")
         elif steps:
             text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
         else:
             text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
         lines.append(text + ".")
-    return ("Refusals counted by code from the customer's answers: the first ask and each later proposal that the customer flatly refused"
-            " or evaded count once for the products refused. Make exactly the next proposal named here, and none after STOP; never"
-            " ask about today again. A product with a recorded promise is done. The policy's own exceptions, such as hardship, come first.\n"
+    return ("\n".join(now) + ("\n" if now else "")
+            + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
+            " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
+            " Make exactly the next proposal named here, and none after STOP; never repeat the first ask. A product with a recorded"
+            " promise is done. The policy's own exceptions, such as hardship, come first.\n"
             + "\n".join(lines))
 
 
@@ -537,7 +583,8 @@ def run():
             allowed = int(band.get("persuasion_attempts")) if band else None
         except Exception:
             allowed = None
-        plans.append((str(p.get(id_field)), spoken, steps, allowed, (_tokens(spoken) | _tokens(kind.replace("_", " ")) | _tokens(p.get(id_field))) - NAME_STOP))
+        plans.append((str(p.get(id_field)), spoken, steps, allowed, (_tokens(spoken) | _tokens(kind.replace("_", " ")) | _tokens(p.get(id_field))) - NAME_STOP,
+                      _money(floor) if floor is not None else ""))
     deadlines = []
     for index, p in enumerate(products):
         if index < len(product_deadlines) and product_deadlines[index]:
@@ -554,9 +601,9 @@ def run():
     vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
     _named_day(today, workdays, holidays, deadlines)
     count = len(rows)
-    counts = _count_refusals(plans)
+    counts, changed = _count_refusals(plans)
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    vars["plan_state"] = _plan_state(plans, counts, changed) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
     known = [(name, dl) for name, dl in deadlines if not name.startswith("band ")]
     if len(known) > 1 and len(set(dl for _, dl in known)) > 1:
         # One date named for several products is the multi-product case that needs the most date arithmetic.

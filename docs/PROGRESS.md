@@ -195,3 +195,8 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - "Gün söylendiyse reddi yok say": PUB-12'deki "kartı yarın öderim, kredileri ödemem" cümlesinde gün ile ret birlikte geliyor;
   - `promised_products` değişkeni: post-hook `vars`'a erişemiyor;
   - plan zincirinin prompttan çıkarılması: "too much" akışında modelin adımların tamamına ihtiyacı var.
+- Tarz testinin tamamı (37acc3b): pieces 11/13, corrects 12/13, talkative 11/13, asks_back 12/13, in_words 12/13. PUB-12 her tarzda düştü.
+  - talkative PUB-06: müşteri kesilen cümlesini baştan söyledi, ajan 15 kez "Go on." dedi. Düzeltme (8efaf77): art arda en fazla bir "Go on.", sonrasında soru tekrar soruluyor.
+  - asks_back PUB-12: "Why do you need that?" sorusundan sonra soru tekrarlandı, hakem bunu yeniden sorma olarak saydı. Düzeltme (e0a1897): sebep söyleniyor, soru tekrarlanmıyor.
+  - in_words PUB-12: kesik "I can pay the five hundred and ten" mesajı "bugün" diye yorumlandı ve `create_promise` geri okuma ve onay olmadan çağrıldı. Tek görülme; kodla engelleme yanlış alarm riski taşıdığı için yapılmadı, izleniyor.
+- Final provası (9872088, gözetimsiz, `--suite` yok): geny ve genx her biri yaklaşık 56 sn, validated, export ve submit tamam, sır taraması temiz. Bulgu: "ayın son iş günü" son tarihi takvim günü olarak hesaplanıyordu. Düzeltme (6ac9c91): `last_business_day_of_month` türü eklendi, normalizasyonu ve testi var.

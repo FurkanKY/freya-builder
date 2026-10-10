@@ -159,7 +159,9 @@ def normalize_spec(spec, api):
         if not isinstance(band.get("deadline"), dict):
             band["deadline"] = {"type": "none", "count": 0, "date": ""}
         kind = str(band["deadline"].get("type") or "").lower()
-        if "month" in kind:
+        # Only this month's end maps to the month-end kinds; 'end of next month' or 'months after today' stay unknown ('see policy').
+        words = set(re.split(r"[^a-z0-9]+", kind))
+        if "month" in words and words & {"end", "last", "final"} and not words & {"next", "after", "following"} and not re.search(r"\d", kind):
             band["deadline"]["type"] = "last_business_day_of_month" if re.search(r"business|working|work_day|workday", kind) else "end_of_month"
         plan = band.get("attempt_plan")
         band["attempt_plan"] = [_text(p) for p in plan] if isinstance(plan, list) else ([plan] if isinstance(plan, str) and plan else [])

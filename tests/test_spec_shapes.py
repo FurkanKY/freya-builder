@@ -193,3 +193,8 @@ def test_last_working_day_of_the_month_is_a_business_day():
     assert scope["_deadline"](rule, today, set(range(6)), {}) == datetime.date(2026, 10, 31)
     assert scope["_deadline"](rule, today, set(range(5)), {"2026-10-30": "x"}) == datetime.date(2026, 10, 29)
     assert scope["_deadline"]({"type": "end_of_month"}, today, set(range(5)), {}) == datetime.date(2026, 10, 31)
+    # Only this month's end maps to a month-end kind; other month words stay unknown ("see policy").
+    for kind, want in [("month_end", "end_of_month"), ("end-of-month", "end_of_month"), ("end_of_next_month", "end_of_next_month"),
+                       ("calendar_month", "calendar_month"), ("months_after_today", "months_after_today")]:
+        spec["account"]["bands"][0]["deadline"] = {"type": kind, "count": 1, "date": ""}
+        assert normalize_spec(spec, API)["account"]["bands"][0]["deadline"]["type"] == want, kind
