@@ -255,3 +255,11 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - ifade alanları oy veriyordu. 2'ye 1 ayrılan bir soru metni, düşmüş bir çağrı değişkeniyle aynı ağırlıktaydı;
   - sıralı karşılaştırma yüzünden yalnız sırası değişen bir liste uyuşmazlık sayılıyordu; gerçek okumalar üzerinde yapılan simülasyonda hatalı okuma %7 ile %33 arasında kazanıyordu.
   - Düzeltme: üçü de düzeltildi. Ek olarak sır kontrolü yalnız "Secret detected" hatasına bakıyor, `BUILDER_READS` geçersizse 3 kullanılıyor (1 ile 5 arasına sınırlı), iptal edilen görevler güvenle işleniyor, seçim adımı hata verirse ilk uygun okuma kullanılıyor. Hepsinin testleri var.
+- Build 20261010T193448-057859Z (980af72, uzlaşmadan önceki kod): build testi 12/13. PUB-05 geçti.
+  - PUB-12 yine düştü. Canlı değişken tablosuna göre sayaç her turda doğruydu: araç kredisi tek denemeden sonra STOP'a geçti ve plan_state'in başında "tabanı 46'yı da teklif etme" satırı vardı. Model buna rağmen "46'yı 2 Kasım'a kadar ödeyebilir misiniz?" diye sordu. Bu, geç bandın 2. denemesi (taban, son tarihte); erken bantlı ürüne uygulandı.
+  - Yorum: modele yalnız ne yapmayacağı söylendiğinde boşluğu kendi teklifiyle dolduruyor.
+- Aynı akşam Freya API'si yaklaşık 22:54–23:02 arasında 503 verdi ("API key validation is temporarily unavailable"). Ölçüm kampanyaları başlamadan düştü. Builder istemcisi artık 429/502/503/504'te bütçe yettikçe artan aralıklarla tekrar deniyor (8eb2178).
+- Düzeltme (4d4f7b2): STOP anında plan bir sonraki adımı açıkça yazıyor.
+  - Teklifi kalan bir ürün varsa, onun tam teklif metnini "NEXT STEP: your next message makes exactly this proposal and no other" satırıyla veriyor.
+  - Hiçbir üründe teklif kalmadıysa satır şöyle: "ödeme isteme, müşterinin gün verdiği ürünleri geri okuyup kaydet, teklifsiz ürünler için politikayı uygula ve kapat". Bu satır, teklif kalmadığı sürece sonraki turlarda da duruyor.
+  - Müşterinin gün verdiği ürün artık "nothing refused yet" diye değil, "müşteri bir gün veya tutar verdi" diye gösteriliyor.

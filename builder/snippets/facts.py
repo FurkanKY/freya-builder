@@ -514,8 +514,9 @@ def _plan_state(plans, counts, changed=(), own=()):
             text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + ", not its floor and not another date, and apply the policy for a product without a promise"
             if pid in changed:
                 # Seen live: after the last allowed full-amount proposal the model still offered the floor.
-                now.append("The customer has just refused the last proposal allowed for " + pid + " " + label + ". It is done: do not offer it anything"
-                           " more, not " + ("its floor " + floor + ", not " if floor else "") + "a smaller amount and not another date.")
+                # No figure inside a prohibition: a weak model repeats the number it reads.
+                now.append("The customer has just refused the last proposal allowed for " + pid + " " + label + ". It is done: propose no amount"
+                           " and no date for it any more.")
         elif steps:
             pending.append(pid + " " + label + ": attempt " + str(k) + ": " + steps[k - 1])
             text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
@@ -527,16 +528,45 @@ def _plan_state(plans, counts, changed=(), own=()):
     if now and pending:
         now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + pending[0] + ".")
     elif stopped and not pending and not unasked:
-        now.append("NEXT STEP: no product has a proposal left. Your next message asks the customer to pay nothing."
-                   + (" Settle what the customer offered for " + " and ".join(offered) + ": read it back and record it when the rules allow it, unless its promise is already recorded."
-                      if offered else "") + " Then follow the policy for the products without a promise and close the call."
-                   " If the customer offers a day or an amount of their own, handle it under the date and amount rules.")
+        now.append(_closing_step(offered))
     return ("\n".join(now) + ("\n" if now else "")
             + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
             " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
             " Make exactly the next proposal named here, and none after STOP; never repeat the first ask. A product with a recorded"
             " promise is done. The policy's own exceptions, such as hardship, come first.\n"
             + "\n".join(lines))
+
+
+def _closing_step(offered):
+    """One concrete next message for the turn after the last proposal; seen live, a list of don'ts was filled with an offer."""
+    if offered:
+        return ("NEXT STEP: no product has a proposal left. Your next message reads back what the customer agreed for " + " and ".join(offered)
+                + " (the product, the amount and the day they gave) and asks them to confirm. It proposes no amount and no date.")
+    return ("NEXT STEP: no product has a proposal left. Your next message proposes no amount and no date: apply the policy for the"
+            " products without a promise, then close the call.")
+
+
+def _wrap_up(plans, counts, own, owed=None):
+    """(True, product lines) when no product has a proposal left: each is at STOP or has a day or amount the customer gave,
+    and at least one is at STOP. The workflow then leaves the persuasion plans behind for a closing node."""
+    lines, stopped, offered = [], 0, []
+    for pid, label, steps, allowed, _, floor in plans:
+        k = int(counts.get(pid) or 0)
+        if k == 0 and pid in own:
+            offered.append(pid + " " + label)
+            lines.append(pid + " " + label + (owed or dict()).get(pid, "") + ": the customer offered a day or an amount for it. Settle it under the date and amount rules,"
+                         " read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
+        elif k > _total((pid, label, steps, allowed)):
+            stopped += 1
+            lines.append(pid + " " + label + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date"
+                         " for it. Apply the policy for a product without a promise.")
+        else:
+            return False, ""
+    if not stopped:
+        return False, ""
+    return True, "\n".join(lines) + ("\nWhen every product has its promise, or what the policy prescribes for a product without one,"
+                                     " close the call as the CLOSING TABLE says.\n" + _closing_step(offered)
+                                     + (" If the customer already confirmed, do the next of these steps instead." if offered else ""))
 
 
 def run():
@@ -587,6 +617,8 @@ def run():
     id_field = acc.get("id_field") or "product_id"
     type_field = acc.get("type_field") or "type"
     rows = []
+    done_rows = []
+    owed = dict()
     product_deadlines = []
     plans = []
     for index, p in enumerate(products):
@@ -601,7 +633,12 @@ def run():
         floor_field, floor = _floor_of(p, _for_type(floors, kind), amount_field)
         dl = band.get("_deadline") if band else None
         product_deadlines.append(dl)
+        owed[str(p.get(id_field))] = (" (amount owed now " + _money(p.get(amount_field)) + "; deadline " + (_label(dl) if dl else "see policy")
+                                      + ("; floor " + _money(floor) + ", only to check an amount the customer gave" if floor is not None else "") + ")")
         text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(_for_type(names, kind), p)
+        # A product at STOP is shown without its floor, plan and raw record: seen live, the model offered the floor it saw.
+        done_rows.append(text + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date for it."
+                         " Apply the policy for a product without a promise.")
         text += "; amount owed now (" + amount_field + ") " + _money(p.get(amount_field))
         text += "; " + seg + " " + str(p.get(seg))
         if band:
@@ -656,7 +693,15 @@ def run():
     own = json.loads(vars.get("own_offer_products") or "[]")
     # One product keeps the flow that passes today: the model counts its own plan.
     vars["plan_state"] = _plan_state(plans, counts, changed, own) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
-    known = [(name, dl) for name, dl in deadlines if not name.startswith("band ")]
+    done, wrap = _wrap_up(plans, counts, own, owed) if len(plans) > 1 else (False, "")
+    vars["negotiation_done"] = "yes" if done else "no"
+    vars["wrap_up_facts"] = wrap or "Not in the closing phase."
+    for index, pl in enumerate(plans):
+        if len(plans) > 1 and int(counts.get(pl[0]) or 0) > _total(pl):
+            rows[index] = done_rows[index]
+    # A finished product's deadline is no date to work with any more.
+    finished = set(pl[0] for pl in plans if len(plans) > 1 and int(counts.get(pl[0]) or 0) > _total(pl))
+    known = [(name, dl) for name, dl in deadlines if not name.startswith("band ") and name not in finished]
     if len(known) > 1 and len(set(dl for _, dl in known)) > 1:
         # One date named for several products is the multi-product case that needs the most date arithmetic.
         first = min(dl for _, dl in known)

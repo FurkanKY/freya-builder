@@ -12,7 +12,8 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 
 # Variables that are set before or during a call; a body field with one of these names would be baked.
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
-            "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state"}
+            "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
+            "negotiation_done", "wrap_up_facts"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -244,13 +245,13 @@ def compile_workflow(spec, api, briefs):
     ]))
     facts_code = "SPEC_JSON = " + _py_literal(json.dumps(spec, ensure_ascii=True)) + "\n" + (SNIPPETS / "facts.py").read_text()
 
-    def code_node(name, target):
+    def code_node(name, target, before=()):
         return {"name": name, "node_type": "code", "passthrough": True, "passthrough_default_transition": target,
                 "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True,
                 "pre_actions": [{"type": "function", "function": {"name": "code_exec", "handler": "__function__:code_exec",
                                  "parameters": {"type": "object", "properties": {"code": {"type": "string", "default": facts_code},
                                                                                  "timeout_ms": {"type": "number", "default": 10000}}}}}],
-                "transitions": [{"target_node": target, "description": "always", "condition": {"operator": "always"}}]}
+                "transitions": list(before) + [{"target_node": target, "description": "always", "condition": {"operator": "always"}}]}
 
     questions = "\n".join(f"- {q.get('field')}: {q.get('ask')} (send as: {q.get('answer_format')})" for q in identity.get("questions", []))
     identify_task = "\n\n".join(filter(None, [
@@ -269,6 +270,15 @@ def compile_workflow(spec, api, briefs):
         "NAMED DAY CHECK:\n{{named_day_facts}}" if DATE_CHECK else "",
         "DATE FACTS:\n{{date_facts}}",
     ]))
+    # Once no product has a proposal left, the persuasion plans are out of sight: seen live, the model kept offering floors.
+    wrap_up_task = "\n\n".join(filter(None, [
+        "PHASE: the payment proposals are finished. For a product marked DONE propose no amount and no date. Finish the call:"
+        " settle what the customer offered, apply the policy for the products without a promise, then close.",
+        "NAMED DAY CHECK:\n{{named_day_facts}}",
+        "DATE FACTS:\n{{date_facts}}",
+        # Last, so the next step is the most recent text the model reads.
+        "PRODUCTS AND NEXT STEP:\n{{wrap_up_facts}}",
+    ]))
     descriptions = spec.get("tool_descriptions") or {}
     pre_tools = [t for t in ("verify_identity", "schedule_callback", "transfer_to_agent", "close_call")]
     post_tools = [t for t in ("create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call")]
@@ -276,6 +286,55 @@ def compile_workflow(spec, api, briefs):
     get_account = api_tool(api, "get_account", spec, model_filled=False, max_retries=2)
     get_account.pop("post_process_code")
     list_field = (spec.get("account") or {}).get("list_field") or "products"
+
+    negotiate_node = {
+        "name": "negotiate", "node_type": "conversation",
+        "on_enter": {"type": "llm"}, "on_enter_first_entry_only": True,
+        "task_message": negotiate_task,
+        "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools],
+        "max_node_turns": 120, "max_turn_transition": "hang_up",
+        # A date-typed extraction resolves "tomorrow" against the server clock, not the call's date (seen live),
+        # so the customer's own words are copied and resolved in code from the call's date.
+        **({"extraction_schema": [{
+            "name": "named_day_words", "type": "string", "min_confidence": 0.6,
+            "description": "The customer's own words for the one exact day they name in their LAST message as a day to pay or as a day"
+                           " they ask about, copied as said, for example 'Monday the 26th', 'the thirtieth', '26 October', 'next Friday',"
+                           " 'tomorrow'. Empty when the last message names no exact day or only a vague period such as 'next week',"
+                           " 'the week after next', 'end of the month' or 'when my salary comes'."}] + ([{
+            # Attempt counting across products is the step the phone model gets wrong most; code keeps the count.
+            "name": "refused_products", "type": "string", "min_confidence": 0.6,
+            "description": "The products the customer flatly refuses to pay in their LAST message, as an answer to a question asking"
+                           " them to pay. Name each refused product with the assistant's own words for it, for example 'personal loan',"
+                           " 'credit card', 'car loan and personal loan'. When the customer only says no, name the product or products"
+                           " the assistant's last question asked about, and write 'all' for a plain no to paying all of them."
+                           " Never write 'the others' or 'the rest': name those products. A product the customer gives a date or an"
+                           " amount for is not refused. 'none' when the last message refuses nothing: it accepts, proposes or asks about"
+                           " a date or an amount, only says the amount is too much, mentions illness, a death, job loss or other hardship,"
+                           " says it is already paid or disputes it, asks a question, only chats, or is cut off."}, {
+            # Only proposals the assistant made are counted: a repeated "none of them" must not use up the others' steps.
+            "name": "proposed_products", "type": "string", "min_confidence": 0.5,
+            "description": "The products that the assistant's most recent payment question asked the customer to pay, named with the"
+                           " assistant's own words for them, for example 'credit card' or 'personal loan and car loan'; 'all' when it asked"
+                           " about paying all the products together. Skip later assistant messages that ask for no payment, such as a"
+                           " reason, 'Go on.' or a request to say it again. 'none' when no payment has been asked yet."}, {
+            # A refusal of the agent's answer to the customer's own day or amount is that product's answer to the first ask.
+            "name": "dated_products", "type": "string", "min_confidence": 0.5,
+            "description": "The products the customer names a day, a date or an amount to pay for in their LAST message, named with the"
+                           " assistant's own words for them, for example 'credit card'; 'all' when the day or amount is for all of them."
+                           " 'none' when the last message names no day, date or amount to pay."}] if COUNT_CHECK else [])}
+           if DATE_CHECK else {}),
+        # Multi-rule date, amount and per-product attempt decisions happen here.
+        "reasoning_override": NEGOTIATE_REASONING,
+        "transitions": [_closed_transition()] + ([{
+            "target_node": "check_date", "description": "the customer named a day or refused a product",
+            "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
+                {"variable": v, "operator": "is_set"},
+                {"variable": v, "operator": "not_equals", "operand": ""},
+                {"variable": v, "operator": "not_equals", "operand": "none"}] + extra}
+                for v, extra in [("named_day_words", [])] + ([("refused_products", [
+                    # One product keeps the flow that passes today.
+                    {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])]}}] if DATE_CHECK else []),
+    }
 
     nodes = {
         "prepare": code_node("prepare", "identify"),
@@ -298,55 +357,13 @@ def compile_workflow(spec, api, briefs):
             "transitions": [{"target_node": "account_facts", "description": "always", "condition": {"operator": "always"}}],
         },
         "account_facts": code_node("account_facts", "negotiate"),
-        "negotiate": {
-            "name": "negotiate", "node_type": "conversation",
-            "on_enter": {"type": "llm"}, "on_enter_first_entry_only": True,
-            "task_message": negotiate_task,
-            "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools],
-            "max_node_turns": 120, "max_turn_transition": "hang_up",
-            # A date-typed extraction resolves "tomorrow" against the server clock, not the call's date (seen live),
-            # so the customer's own words are copied and resolved in code from the call's date.
-            **({"extraction_schema": [{
-                "name": "named_day_words", "type": "string", "min_confidence": 0.6,
-                "description": "The customer's own words for the one exact day they name in their LAST message as a day to pay or as a day"
-                               " they ask about, copied as said, for example 'Monday the 26th', 'the thirtieth', '26 October', 'next Friday',"
-                               " 'tomorrow'. Empty when the last message names no exact day or only a vague period such as 'next week',"
-                               " 'the week after next', 'end of the month' or 'when my salary comes'."}] + ([{
-                # Attempt counting across products is the step the phone model gets wrong most; code keeps the count.
-                "name": "refused_products", "type": "string", "min_confidence": 0.6,
-                "description": "The products the customer flatly refuses to pay in their LAST message, as an answer to a question asking"
-                               " them to pay. Name each refused product with the assistant's own words for it, for example 'personal loan',"
-                               " 'credit card', 'car loan and personal loan'. When the customer only says no, name the product or products"
-                               " the assistant's last question asked about, and write 'all' for a plain no to paying all of them."
-                               " Never write 'the others' or 'the rest': name those products. A product the customer gives a date or an"
-                               " amount for is not refused. 'none' when the last message refuses nothing: it accepts, proposes or asks about"
-                               " a date or an amount, only says the amount is too much, mentions illness, a death, job loss or other hardship,"
-                               " says it is already paid or disputes it, asks a question, only chats, or is cut off."}, {
-                # Only proposals the assistant made are counted: a repeated "none of them" must not use up the others' steps.
-                "name": "proposed_products", "type": "string", "min_confidence": 0.5,
-                "description": "The products that the assistant's most recent payment question asked the customer to pay, named with the"
-                               " assistant's own words for them, for example 'credit card' or 'personal loan and car loan'; 'all' when it asked"
-                               " about paying all the products together. Skip later assistant messages that ask for no payment, such as a"
-                               " reason, 'Go on.' or a request to say it again. 'none' when no payment has been asked yet."}, {
-                # A refusal of the agent's answer to the customer's own day or amount is that product's answer to the first ask.
-                "name": "dated_products", "type": "string", "min_confidence": 0.5,
-                "description": "The products the customer names a day, a date or an amount to pay for in their LAST message, named with the"
-                               " assistant's own words for them, for example 'credit card'; 'all' when the day or amount is for all of them."
-                               " 'none' when the last message names no day, date or amount to pay."}] if COUNT_CHECK else [])}
-               if DATE_CHECK else {}),
-            # Multi-rule date, amount and per-product attempt decisions happen here.
-            "reasoning_override": NEGOTIATE_REASONING,
-            "transitions": [_closed_transition()] + ([{
-                "target_node": "check_date", "description": "the customer named a day or refused a product",
-                "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
-                    {"variable": v, "operator": "is_set"},
-                    {"variable": v, "operator": "not_equals", "operand": ""},
-                    {"variable": v, "operator": "not_equals", "operand": "none"}] + extra}
-                    for v, extra in [("named_day_words", [])] + ([("refused_products", [
-                        # One product keeps the flow that passes today.
-                        {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])]}}] if DATE_CHECK else []),
-        },
-        **({"check_date": code_node("check_date", "negotiate")} if DATE_CHECK else {}),
+        "negotiate": negotiate_node,
+        **({"check_date": code_node("check_date", "negotiate", [] if not COUNT_CHECK else [{
+            "target_node": "wrap_up", "description": "no product has a proposal left",
+            "condition": {"logic": "and", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}])}
+           if DATE_CHECK else {}),
+        **({"wrap_up": dict(negotiate_node, name="wrap_up", task_message=wrap_up_task)}
+           if DATE_CHECK and COUNT_CHECK else {}),
         "hang_up": {
             "name": "hang_up", "node_type": "end_call", "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True,
             "transitions": [],

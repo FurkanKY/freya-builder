@@ -288,8 +288,11 @@ def test_only_proposals_the_assistant_made_are_counted():
     # A bare "no" answers what was just proposed.
     out = run_facts(wf, dict(out, refused_products="no", proposed_products="the car loan"))
     assert json.loads(out["refusal_counts"]) == {"p1": 2, "p2": 1, "p3": 2}
-    assert out["plan_state"].startswith("The customer has just refused the last proposal allowed for p3 car loan. It is done: do not offer it"
-                                        " anything more, not its floor 46, not a smaller amount and not another date.")
+    assert out["plan_state"].startswith("The customer has just refused the last proposal allowed for p3 car loan. It is done: propose no"
+                                        " amount and no date for it any more.")
+    # No figure of a finished product is left to repeat: its fact line drops the floor, the plan and the raw record.
+    p3_line = next(l for l in out["account_facts"].splitlines() if "p3" in l)
+    assert "DONE" in p3_line and "46" not in p3_line and "140" not in p3_line and "46" not in out["plan_state"].split("\n")[0]
     # The STOP line for a product is said once, on the turn its last proposal is refused.
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     assert json.loads(out["refusal_counts"]) == {"p1": 2, "p2": 2, "p3": 2}
@@ -389,11 +392,31 @@ def test_stop_names_the_next_step():
     assert json.loads(out["refusal_counts"]) == {"p2": 3, "p3": 2}
     first = out["plan_state"].splitlines()
     assert first[0].startswith("The customer has just refused the last proposal allowed for p3 car loan.")
-    assert first[1].startswith("NEXT STEP: no product has a proposal left. Your next message asks the customer to pay nothing."
-                               " Settle what the customer offered for p1 credit card ending 9015")
+    assert first[1] == ("NEXT STEP: no product has a proposal left. Your next message reads back what the customer agreed for p1 credit"
+                        " card ending 9015 (the product, the amount and the day they gave) and asks them to confirm. It proposes no amount and no date.")
+    # The closing node takes over: it is routed to from check_date and shows no persuasion plan.
+    assert out["negotiation_done"] == "yes"
+    assert "p3 car loan: DONE" in out["wrap_up_facts"] and "p1 credit card ending 9015 (amount owed now 510; deadline " in out["wrap_up_facts"]
+    assert out["wrap_up_facts"].splitlines()[-1].startswith("NEXT STEP: no product has a proposal left. Your next message reads back")
+    assert "PERSUASION PLAN" not in wf["nodes"]["wrap_up"]["task_message"] and "{{account_facts}}" not in wf["nodes"]["wrap_up"]["task_message"]
+    assert wf["nodes"]["wrap_up"]["task_message"].rstrip().endswith("{{wrap_up_facts}}")
+    route = wf["nodes"]["check_date"]["transitions"]
+    assert route[0]["target_node"] == "wrap_up" and route[-1] == {"target_node": "negotiate", "description": "always", "condition": {"operator": "always"}}
+    assert "negotiation_done" in json.dumps(route[0]["condition"])
+    # The closing node keeps the extraction and the route through check_date, so a re-opened date is still checked and counted.
+    assert wf["nodes"]["wrap_up"]["extraction_schema"] == wf["nodes"]["negotiate"]["extraction_schema"]
+    assert wf["nodes"]["wrap_up"]["transitions"] == wf["nodes"]["negotiate"]["transitions"]
     # The step stays while nothing is left to propose, also on a later turn that names a day.
     out = run_facts(wf, dict(out, named_day_words="Thursday"))
     assert out["plan_state"].startswith("NEXT STEP: no product has a proposal left.")
     # A product nobody has answered for yet is not done: no closing step then.
     out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p2": 2}), refused_products="personal loan", proposed_products="personal loan"))
-    assert "NEXT STEP" not in out["plan_state"] and "STOP" in out["plan_state"]
+    assert "NEXT STEP" not in out["plan_state"] and "STOP" in out["plan_state"] and out["negotiation_done"] == "no"
+    # Every product refused to its STOP: no read-back, the policy for products without a promise, then the close.
+    out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 3, "p2": 3, "p3": 1}), refused_products="car loan", proposed_products="car loan"))
+    assert out["negotiation_done"] == "yes" and "reads back" not in out["wrap_up_facts"]
+    assert out["wrap_up_facts"].endswith("Your next message proposes no amount and no date: apply the policy for the products without a promise,"
+                                         " then close the call.")
+    # One product keeps today's flow: no closing node routing.
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products[:1]), "refused_products": "credit card"})
+    assert out["negotiation_done"] == "no"
