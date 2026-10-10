@@ -155,3 +155,12 @@ Claude Code oturumu mevcut olduğu kullanıcı tarafından belirtildi; SDK eriş
 - Kapsam dondurma kapısı: minimum builder A/B export ve trace üretmiyorsa genişletmeler durur. Önce mevcut akış düzeltilir. Gece yarısı gizli ajan teslimi yapılmaz.
 - Erişim/baseline: bu çalışma; tarih ve kayıt deneyleri: baseline sonrası; final prova: gizli brief açılmadan önce. Sahip: bu sohbetin uygulayıcı ajanı; anahtar erişimini kullanıcı sağlar.
 - İlerleme her aşamada outputs/ILERLEME.md ve Git commit’leriyle korunur.
+
+## Revizyon 3 — Spec derleyicisi (10 Ekim, ölçüme dayalı)
+
+- Neden: modelin tam workflow JSON'u yazması 720 sn'lik üretim sınırını aştı (ilk canlı run). Workflow'un tamamı, 30 dakikalık bütçede güvenilir biçimde tek çağrıyla üretilemiyor.
+- Model (araçsız, tek çağrı, ~45-90 sn) yalnızca BankSpec döndürür: kaynaklı kural kaydı, kapsama, çağrı değişkenleri ve saat değişkeni, açılış cümlesi, kimlik soruları (OpenAPI enum'undan), takvim, ürün alanları, bantlar ve deadline türleri, gerekçesiz sonuçlar, araç açıklamaları ve faz bazlı operasyonel checklist'ler.
+- `validate_spec` her alanı verilen OpenAPI'ye karşı denetler. İhlal olursa bir düzeltme çağrısı yapılır, sonra hata verilir.
+- `compile.py` yalnızca platform mekaniği içerir; banka kuralı içermez. Brief'ler system_prompt'a birebir girer. Tarih ve ürün olguları sandbox kod node'unda hesaplanır (yalnızca json, re ve datetime). Kimlik bayrağı account erişimini routing ile açar. Kancalar her araç sonucuna what_to_do_next ekler.
+- Negotiate node'unda model akıl yürütmesi açık. Ölçüm: tarih ve deneme sayısı hataları düzeldi; tur medyanı 3 sn'den 6 sn'ye çıktı.
+- Genelleme provası: tests/fixtures/genx (ham materyal, memo override, yeniden adlandırılmış alanlar ve enum'lar) temiz spec üretti ve dryRun'dan geçti.

@@ -3,6 +3,12 @@
 Python coordinator using Claude Agent SDK and the official Freya v3 kit.
 The builder uses the existing Claude Code login. The phone agent uses the event model.
 
+How it works: one tool-less Claude call reads the briefs and the tool API and returns a
+BankSpec (rules register, calendar, bands, identity questions, outcomes, phase checklists).
+`builder/compile.py` turns it into a Freya workflow with verified platform patterns; the
+briefs are embedded verbatim, dates and per-product deadlines are computed by a code node
+(`builder/snippets/facts.py`), and the account is gated behind identity verification.
+
 ## Setup
 
 ```bash
@@ -24,6 +30,13 @@ Multiple briefs use repeated flags (or positional brief paths before the API fil
 
 ```bash
 .venv/bin/python -m builder.build --brief vendor/kit-v3/briefs/brief-a.md --brief vendor/kit-v3/briefs/brief-b.md --tool-api vendor/kit-v3/tools/openapi.json --slot public-b --suite B
+```
+
+Suite `AB` tests the A+B agent on all 13 public cases (Brief B keeps every Brief A rule).
+Development measurements with repetitions or styles run outside the build budget:
+
+```bash
+.venv/bin/python -m builder.campaign <run_id> --suite AB --reps 3 --style pieces
 ```
 
 For unseen briefs omit `--suite` unless an appropriate documented evaluation integration
