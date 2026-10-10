@@ -216,8 +216,8 @@ def run():
         floor = p.get(floor_field) if floor_field else None
         dl = band.get("_deadline") if band else None
         product_deadlines.append(dl)
-        text = str(index + 1) + ". product_id " + str(p.get(id_field)) + ": " + _spoken(names.get(kind), p)
-        text += "; past-due amount " + _money(p.get(amount_field))
+        text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(names.get(kind), p)
+        text += "; amount owed now (" + amount_field + ") " + _money(p.get(amount_field))
         text += "; " + seg + " " + str(p.get(seg))
         if band:
             text += "; band " + str(band.get("name")) + "; deadline " + (_label(dl) if dl else "see policy") + "; persuasion attempts " + str(band.get("persuasion_attempts"))

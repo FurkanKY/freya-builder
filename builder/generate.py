@@ -68,6 +68,9 @@ Rules for the spec:
   only after a tool succeeds); express the same fact with a different word form, e.g. "we are ...ing this call" instead of "this call is ...ed" or "is being ...ed".
 - attempt_plan lists exactly the proposals the brief allows after the first ask, so its length matches the brief's attempt count;
   the code fills in the tokens per product. Leave it empty if the brief has no persuasion sequence.
+  Put in each step only what the brief states. If the brief gives only a number of attempts, each step repeats the
+  brief's own request (e.g. "attempt 2: ask again for <amount> by <deadline>, or any amount the brief accepts"); never
+  invent a new amount, date or condition.
 - Never include practice-case answers, customer data or the real clock."""
 
 
