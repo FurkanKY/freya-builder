@@ -214,6 +214,19 @@ def run():
             text += "; band " + str(band.get("name")) + "; deadline " + (_label(dl) if dl else "see policy") + "; persuasion attempts " + str(band.get("persuasion_attempts"))
         if floor is not None:
             text += "; floor (" + str(floor_field) + ") " + _money(floor)
+        plan = band.get("attempt_plan") if band else None
+        if isinstance(plan, list) and plan:
+            tokens = {"amount": _money(p.get(amount_field)), "floor": _money(floor) if floor is not None else "the floor",
+                      "deadline": _label(dl) if dl else "the deadline", "next_business_day": _label(nb) if nb else "the next business day",
+                      "last_business_day_this_week": _label(lb) if lb else "the last business day of this week",
+                      "last_business_day_next_week": _label(lbn) if lbn else "the last business day of next week"}
+            steps = []
+            for step in plan:
+                step = str(step)
+                for k, v in tokens.items():
+                    step = step.replace("<" + k + ">", v)
+                steps.append(step)
+            text += "; persuasion plan for this product, used one step per refusal or non-answer: " + " | ".join(steps)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)
     deadlines = []

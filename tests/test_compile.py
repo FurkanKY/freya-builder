@@ -82,3 +82,13 @@ def test_facts_read_the_spec_named_clock_variable():
     wf = compile_workflow(spec, API, BRIEFS)
     out = run_facts(wf, {"call_time": "2026-10-21T09:00", "now": "1999-01-01T00:00"})
     assert out["date_facts"].startswith("Now: 2026-10-21")
+
+
+def test_facts_render_attempt_plan_per_product():
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["bands"][0]["attempt_plan"] = ["attempt 1: <amount> by <last_business_day_this_week>", "attempt 2: <floor> on <deadline>"]
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0}]
+    out = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products)})
+    assert "attempt 1: 300 by 2026-10-23 (Friday" in out["account_facts"]
+    assert "attempt 2: 90 on 2026-10-29 (Thursday" in out["account_facts"]

@@ -42,7 +42,8 @@ SCHEMA = """Return exactly this shape:
     "spoken_name_by_type": {"<product type>": "<how to name it aloud; insert product fields as <field_name>>"},
     "bands": [{"name": "...", "min": <number>, "max": <number>,
                "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
-               "persuasion_attempts": <n>}]
+               "persuasion_attempts": <n>,
+               "attempt_plan": ["<one entry per payment proposal the agent makes for a product in this band after the first ask, in order, e.g. 'attempt 1: <amount> by <last_business_day_this_week>'; tokens: <amount> <floor> <deadline> <next_business_day> <last_business_day_this_week> <last_business_day_next_week>; add the brief's conditions in words>"]}]
   },
   "outcomes": {"no_reason": ["<close_call outcomes that take no reason>"]},
   "tool_descriptions": {"<tool>": "<when to CALL it, in imperative form, per the brief>"},
@@ -62,6 +63,8 @@ Rules for the spec:
 - The agent receives computed DATE FACTS (today, weekday dates of this and next calendar week, last business day of each,
   next business day, a day-by-day calendar with holidays, band deadlines) and ACCOUNT FACTS (each product with id, spoken
   name, amount, band, deadline, floor, attempts). Refer to them in the checklists instead of describing how to compute.
+- attempt_plan lists exactly the proposals the brief allows after the first ask, so its length matches the brief's attempt count;
+  the code fills in the tokens per product. Leave it empty if the brief has no persuasion sequence.
 - Never include practice-case answers, customer data or the real clock."""
 
 
