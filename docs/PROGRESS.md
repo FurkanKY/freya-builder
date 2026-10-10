@@ -93,3 +93,13 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - talkative: 8/13 (önce 4/13). Kalan: reasoning kesilmesi (9 hata, 4 kapanmayan çağrı) ve identify'da 40 tur sınırı → sınırlar 80/120 (10a5da0).
 - Genelleme fixture'ı (Northwind, yeniden adlandırılmış API): spec doğru, attempt_plan bant başına doğru üretildi; ilk çıktıdaki now_variable hatası tek düzeltme çağrısıyla giderildi; dryRun geçerli.
 - 13:40–13:55 UTC arası staging'de ajan LLM kesintisi: tüm çağrılar açılıştan sonra sessiz, `customer-ended-call` (0/13). Bu aralıktaki reasoning enabled/disabled karşılaştırması geçersiz; kesinti bitince tekrarlanacak.
+
+## Aşama 7 — Reasoning karşılaştırması ve dayanıklılık
+- Aynı kod (dc0f3f2), negotiate reasoning **enabled** vs **disabled** (staging altyapı hataları ayıklanarak):
+  - enabled: AB 10/13, 3 kayıp tümü snekbox kesintisi ("Failed to reach snekbox"); altyapısız 10/10. talkative 10/13 (önce 4 → 8 → 10).
+  - disabled: AB 6/13; altyapısız kayıplar PUB-07 (tatil günü yanlış tarih, bilinen reasoning-siz hata) ve PUB-03 (parça sanılan tam tarih).
+  - **Karar: reasoning enabled kalır.**
+- Staging'de iki ayrı kesinti gözlendi: ajan LLM'i yanıt vermedi (13:40–13:55 UTC) ve snekbox kod sandbox'ına ulaşılamadı (hook'lu her tool çağrısı ve code node düşer). Bunlar platform kaynaklı; ölçümde ayrı sayılıyor.
+- Genelleme fixture'ından çıkan hatalar düzeltildi: tool ipuçları path ile anahtarlanınca kayboluyordu (2ab1f1e), fact etiketleri API alan adlarını kullanıyor, kapalı günde önceki iş günü de yazılıyor, iç içe ürün listesi yolu destekleniyor, uydurma persuasion adımı yasak.
+- Build dayanıklılığı: bozuk/zaman aşımlı model çıktısı bir kez yeniden denenir; düzeltme sonrası hâlâ geçersiz spec build'i düşürmez, en az hatalı spec derlenir (bb2cc30); Freya 5xx/429/ağ hataları iki kez yeniden denenir (dc0f3f2).
+- Teslim: `trace.txt` (düz metin iz) ve `python -m builder.submit <run_id> <ad>` (hash doğrulamalı export+trace kopyası, 31be6ec). README'de final prosedürü.
