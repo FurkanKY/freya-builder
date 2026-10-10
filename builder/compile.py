@@ -30,7 +30,7 @@ Use the computed DATE FACTS and ACCOUNT FACTS for every date, weekday, deadline,
 Send dates to tools as YYYY-MM-DD and amounts as plain numbers."""
 
 # The phone model's thinking budget is small: a long private reasoning leaves no reply ("no speakable content").
-BRIEF_THINKING = """Think briefly before each reply and only in this form, one short line per product still open: "<product>: said <what the customer said, as a date or amount> | fact <the matching ACCOUNT FACTS or DATE FACTS value> | next <the one tool call or proposal>". Do not restate the policy to yourself and do not check a fact twice. Take one step per reply: when the customer answers for several products at once, act now only on the first product that needs an action (call its tool or make its next proposal) and keep the others for the following replies. Then always give the reply."""
+BRIEF_THINKING = """Think briefly before each reply, in a few short lines at most: which product and step you are on, the matching line of ACCOUNT FACTS or DATE FACTS, and what to say or call. Do not restate the policy to yourself. Then always give the reply."""
 
 CLOSE_RULE = """Ending the call: say the required closing words (thank the customer, goodbye) and call close_call in that same message with the outcome and reason that the policy prescribes. close_call is always the very last tool call and is called exactly once."""
 
