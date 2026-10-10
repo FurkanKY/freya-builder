@@ -240,11 +240,12 @@ def test_refusals_are_counted_per_product_in_code():
     # Group words: a shared word picks every product that has it, 'all' picks every product, 'the others' nothing.
     out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refused_products": "the loans"})
     assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
-    # With no known proposal, a group refusal counts only for the product being worked on, in bank order.
+    # With no known proposal, a group refusal counts only for the product being worked on, in bank order, and as the
+    # first-ask answer of a product never counted (the card was left out of the first answer).
     out = run_facts(wf, dict(out, refused_products="all of them"))
-    assert json.loads(out["refusal_counts"]) == {"p2": 2, "p3": 1}
+    assert json.loads(out["refusal_counts"]) == {"p1": 1, "p2": 2, "p3": 1}
     out = run_facts(wf, dict(out, refused_products="the others"))
-    assert json.loads(out["refusal_counts"]) == {"p2": 2, "p3": 1} and out["refused_products"] == "none"
+    assert json.loads(out["refusal_counts"]) == {"p1": 1, "p2": 2, "p3": 1} and out["refused_products"] == "none"
     # A product first refused after the first ask was on its attempt 1.
     out = run_facts(wf, dict(out, refused_products="the card ending 9015"))
     assert json.loads(out["refusal_counts"])["p1"] == 2
@@ -296,7 +297,8 @@ def test_only_proposals_the_assistant_made_are_counted():
     # The STOP line for a product is said once, on the turn its last proposal is refused.
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     assert json.loads(out["refusal_counts"]) == {"p1": 2, "p2": 2, "p3": 2}
-    assert out["plan_state"].startswith("Refusals counted by code")
+    assert "The customer has just refused" not in out["plan_state"]
+    assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p2 personal loan: attempt 2:")
     # A first ask that was answered without a counted refusal: the first proposal of a product is still its attempt 1.
     out = run_facts(wf, dict(base, refused_products="I am not paying the personal loan", proposed_products="personal loan"))
     assert json.loads(out["refusal_counts"]) == {"p2": 2}
@@ -309,7 +311,7 @@ def test_only_proposals_the_assistant_made_are_counted():
     start = dict(base, refusal_counts=json.dumps({"p1": 1, "p2": 1, "p3": 1}))
     out = run_facts(wf, dict(start, refused_products="none of them", proposed_products="none"))
     assert json.loads(out["refusal_counts"]) == {"p1": 2, "p2": 1, "p3": 1}
-    assert out["plan_state"].startswith("Refusals counted by code")
+    assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p1 credit card ending 9015: attempt 2:")
     # Wordy 'nothing refused' values count nothing, also for the product just proposed.
     for word in ["No refusals", "N/A (accepted)", "not refused", "no refusal - accepted Friday", "Customer accepted", "No products refused"]:
         out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 3, "p2": 2, "p3": 1}), refused_products=word, proposed_products="personal loan"))
@@ -323,9 +325,22 @@ def test_only_proposals_the_assistant_made_are_counted():
     assert json.loads(out["own_offer_products"]) == ["p1", "p2", "p3"] and out["dated_products"] == "none"
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     assert json.loads(out["refusal_counts"]) == {"p2": 1}
+    # "I can pay the card today" answers the first ask for the loans too: each starts at attempt 1, named one at a time.
     out = run_facts(wf, dict(base, named_day_words="today", dated_products="the credit card"))
+    assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
+    assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p2 personal loan: attempt 1:")
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="none"))
-    assert json.loads(out["refusal_counts"]) == {"p2": 2}
+    assert json.loads(out["refusal_counts"]) == {"p2": 2, "p3": 1}
+    # Seen live: after the card's day, "can you pay the loans today?" "No, neither": both loans answer the first ask.
+    out = run_facts(wf, dict(base, own_offer_products=json.dumps(["p1"]), refused_products="personal loan and car loan", proposed_products="none"))
+    assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
+    assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p2 personal loan: attempt 1:")
+    # A day named with no product in the same answer is checked first: no proposal is named then.
+    out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p2": 1, "p3": 1}), refused_products="personal loan", proposed_products="personal loan", named_day_words="next month"))
+    assert "NEXT STEP" not in out["plan_state"]
+    # A product nobody has answered for comes first in bank order: nothing is named past it.
+    out = run_facts(wf, dict(base, refused_products="the personal loan", proposed_products="none", refusal_counts=json.dumps({"p3": 1})))
+    assert json.loads(out["refusal_counts"]) == {"p2": 2, "p3": 1} and "NEXT STEP" not in out["plan_state"]
     # The first answer that names a day for one product and refuses the others counts the first ask for those.
     out = run_facts(wf, dict(base, named_day_words="tomorrow", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
     assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
@@ -380,7 +395,9 @@ def test_stop_names_the_next_step():
     base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
     out = run_facts(wf, dict(base, named_day_words="tomorrow", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
     assert "p1 credit card ending 9015: refused 0 times; the customer gave a day or an amount for it" in out["plan_state"]
-    assert "NEXT STEP" not in out["plan_state"]
+    # One product at a time: the first refused loan's attempt 1 is named, and nothing for the other loan.
+    assert out["plan_state"].splitlines()[0] == ("NEXT STEP: your next message makes exactly this proposal and no other: p2 personal"
+                                                 " loan: attempt 1: propose 2026-10-16 (Friday, 16 October 2026) for 1320.")
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     assert json.loads(out["refusal_counts"]) == {"p2": 3, "p3": 1}

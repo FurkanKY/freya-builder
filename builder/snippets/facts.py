@@ -437,7 +437,7 @@ def _count_refusals(plans, day_named=False, named_date=None):
     refusal adds one only for the products the assistant last proposed, so a repeated "none of them" during one
     product's proposal does not use up the proposals of products not offered yet. A product first refused after the
     first ask starts at attempt 1, unless the customer had given it a day or an amount of their own: then that refusal
-    is its answer to the first ask. Returns (counts, changed ids).
+    is its answer to the first ask. Returns (counts, changed ids, ids the customer gave a day for in this answer).
     """
     try:
         counts = json.loads(str(vars.get("refusal_counts") or "{}"))
@@ -459,7 +459,9 @@ def _count_refusals(plans, day_named=False, named_date=None):
             own.append(pid)
     raw = str(vars.get("refused_products") or "").strip()
     asked = _ids(str(vars.get("proposed_products") or ""), infos)
+    dated_now = _ids(str(vars.get("dated_products") or ""), infos)
     changed = []
+    fresh = []
     try:
         days_of = json.loads(str(vars.get("own_offer_days") or "{}"))
         days_of = days_of if isinstance(days_of, dict) else dict()
@@ -474,7 +476,6 @@ def _count_refusals(plans, day_named=False, named_date=None):
             open_ids = [pl[0] for pl in plans if 0 < k_of(pl[0]) <= _total(pl)]
             ids = asked or (open_ids if len(open_ids) == 1 else [])
         first_ask = first_open and (not asked or set(asked) == set(all_ids))
-        dated_now = _ids(str(vars.get("dated_products") or ""), infos)
         if first_ask and dated_now and set(ids) - set(dated_now):
             ids = [pid for pid in ids if pid not in dated_now]
         if first_ask and day_named and ids and set(ids) < set(all_ids):
@@ -488,10 +489,13 @@ def _count_refusals(plans, day_named=False, named_date=None):
         if not first_ask and not asked and len(ids) > 1:
             # Not known what was proposed: a group refusal counts only for the product being worked on, in bank order.
             working = [pid for pid in all_ids if pid in ids and 0 < k_of(pid) <= _total(plans[all_ids.index(pid)])]
-            ids = working[:1]
+            # Products never counted and never offered by the customer are refusing the first ask, asked again for them.
+            # Seen live: "I can pay the card tomorrow", then "can you pay the loans today?", "no": nothing was counted.
+            fresh = [pid for pid in all_ids if pid in ids and k_of(pid) == 0 and pid not in own]
+            ids = fresh + working[:1]
         for pid in ids:
             k = k_of(pid)
-            if first_ask:
+            if first_ask or pid in fresh:
                 new = max(k, 1)
             elif asked and pid not in asked:
                 new = k
@@ -502,13 +506,21 @@ def _count_refusals(plans, day_named=False, named_date=None):
             if new != k:
                 counts[pid] = new
                 changed.append(pid)
+    elif first_open and day_named and dated_now and (not asked or set(asked) == set(all_ids)):
+        # "Can you pay all of them today?" "I can pay the card tomorrow": the products the answer leaves out are not
+        # paid today either. Each is counted once for the first ask, so its plan starts at attempt 1 and today is not
+        # asked again.
+        for pid in all_ids:
+            if pid not in dated_now and k_of(pid) == 0 and pid not in own:
+                counts[pid] = 1
+                changed.append(pid)
     vars["refused_products"] = "none"
     vars["proposed_products"] = "none"
     vars["dated_products"] = "none"
     vars["own_offer_products"] = json.dumps(own)
     vars["own_offer_days"] = json.dumps(days_of, sort_keys=True)
     vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
-    return counts, changed
+    return counts, changed, dated_now
 
 
 def _var(key):
@@ -565,9 +577,10 @@ def _total(plan):
     return len(steps) if steps else (allowed if allowed is not None else 99)
 
 
-def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None):
+def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, day_named=False, dated=()):
     recorded = recorded or dict()
     lines = []
+    next_of = dict()
     now = []
     pending, unasked, stopped, offered = [], [], [], []
     for pid, label, steps, allowed, _, floor in plans:
@@ -594,9 +607,11 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None):
                            " and no date for it any more.")
         elif steps:
             pending.append(pid + " " + label + ": attempt " + str(k) + ": " + steps[k - 1])
+            next_of[pid] = pending[-1]
             text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
         else:
             pending.append(pid + " " + label + ": persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says")
+            next_of[pid] = pending[-1]
             text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
         lines.append(text + ".")
     # Seen live: told only what not to do, the model filled the gap with an offer of its own. Name the next step.
@@ -604,6 +619,15 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None):
         now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + pending[0] + ".")
     elif stopped and not pending and not unasked:
         now.append(_closing_step(offered, details))
+    elif not (day_named and not dated):
+        # A refusal was just counted: one product at a time, in bank order. Seen live: with two products refused
+        # together, the model proposed to both in one message and gave the one-attempt product a second proposal.
+        # Not when the customer gave a day in the same answer without naming a product: that day is checked first.
+        # A product before it in bank order that nobody has answered for yet comes first; then nothing is named.
+        order = [pl[0] for pl in plans]
+        nxt = [pid for pid in order if pid in changed and pid in next_of and pid not in dated]
+        if nxt and not any(pid in unasked for pid in order[:order.index(nxt[0])]):
+            now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + next_of[nxt[0]] + ".")
     return ("\n".join(now) + ("\n" if now else "")
             + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
             " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
@@ -782,7 +806,7 @@ def run():
         resolved = []
     named_date = resolved[0].isoformat() if len(resolved) == 1 else None
     count = len(rows)
-    counts, changed = _count_refusals(plans, day_named, named_date)
+    counts, changed, dated_now = _count_refusals(plans, day_named, named_date)
     own = json.loads(vars.get("own_offer_products") or "[]")
     # A finished product's deadline is no date to work with any more. Seen live: the band line and the calendar still named
     # it after its last proposal, and the model offered that product its floor on that date.
@@ -828,7 +852,7 @@ def run():
             settled.append(pid)
         details[pid + " " + label] = text
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded, day_named, dated_now) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
     done, wrap, step = _wrap_up(plans, counts, settled, owed, details, recorded) if len(plans) > 1 else (False, "", "")
     vars["negotiation_done"] = "yes" if done else "no"
     vars["wrap_up_facts"] = wrap or "Not in the closing phase."
