@@ -4,12 +4,15 @@ Bank facts (fields, enums, calendar, bands, outcomes, policy text) come only fro
 the supplied OpenAPI. This module holds platform mechanics, never bank policy.
 """
 import json
+import os
 from pathlib import Path
 
 SNIPPETS = Path(__file__).resolve().parent / "snippets"
 
 # Variables that are set before or during a call; a body field with one of these names would be baked.
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count", "account_products"}
+
+NEGOTIATE_REASONING = os.environ.get("BUILDER_AGENT_REASONING", "enabled")
 
 TOOL_NAMES = ("verify_identity", "get_account", "create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call")
 
@@ -224,6 +227,8 @@ def compile_workflow(spec, api, briefs):
             "task_message": negotiate_task,
             "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools],
             "max_node_turns": 60, "max_turn_transition": "hang_up",
+            # Multi-rule date, amount and per-product attempt decisions happen here.
+            "reasoning_override": NEGOTIATE_REASONING,
             "transitions": [_closed_transition()],
         },
         "hang_up": {

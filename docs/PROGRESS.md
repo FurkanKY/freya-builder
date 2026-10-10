@@ -46,3 +46,16 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Builder kodunda brief'e özgü değer yok; alan adları/enum'lar OpenAPI'den, takvim/bantlar spec'ten.
 - Elle yazılmış örnek spec ile derlenen workflow Freya dryRun'dan geçti (valid: true). 23/23 test.
 - Commit 0eb17c1. Başlatılan: tam Brief A ölçümü, slot public-a.
+
+## Aşama 3 — İlk ölçümler (10 Ekim öğleden sonra)
+| Run | Girdi | Suite | Sonuç | Süre |
+|---|---|---|---|---|
+| 20261010T122027-813658Z | A | A (10) | 9/10, PUB-07 fail | ~3,5 dk (spec 69 sn, test 136 sn) |
+| 20261010T122536-491343Z | A+B | AB (13) | 11/13, PUB-07 + PUB-12 fail | ~4 dk |
+- Mekanik sorun yok: kimlik kapısı, routing, post-hook, tek close_call, kapanış hepsi doğru. Tur medyanı 3-5 sn.
+- PUB-07: müşteri 26 Ekim (tatil, deadline içinde) dedi; ajan sonraki iş günü yerine deadline'ı önerdi. Takvim satırları zenginleştirildi ama tekrarladı → telefon modelinin kural uygulama hatası.
+- PUB-12: erken bantlı üründe 2. ikna denemesi yapıldı (olgularda "attempts 1" yazıyordu).
+- Deney: negotiate node'unda reasoning_override=enabled (BUILDER_AGENT_REASONING ile kapatılabilir).
+- Genelleme fixture'ı (tests/fixtures/genx: ham materyal + memo override + yeniden adlandırılmış API): spec 46 sn, doğru alanlar/öncelik, local + dryRun temiz.
+- Repair kanıtı artık kısa transkript özeti (evaluate.transcript_digest).
+- AB suite: A+B ajanı 13 public vakanın hepsiyle test edilir.
