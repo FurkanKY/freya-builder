@@ -272,3 +272,15 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - r6, 4d4f7b2 AB × 3 (sonuçlar platformdan doğrudan okundu): PUB-12 üç tekrarda da düştü. PUB-05 üçüncü tekrarda "inconclusive", geri kalan 11 müşteri 3/3 geçti.
   - Üçüncü tekrarın simülasyonu (0ea8137c, 23:20) bütün konuşmaları 23:22'de bitirip değerlendirdiği halde platformda 30 dakikadan uzun süre "running" kaldı. Kit koşucusu bu durumu beklemekten başka bir şey yapamıyor; aynı şey 22:46'daki simülasyonda da 23 dakika sürmüştü.
   - Final build'i `--suite` kullanmadığı için bu takılma finali etkilemez. Ölçüm betikleri artık bir build veya kampanyadan önce çalışma alanında koşan simülasyon kalmamasını bekliyor.
+- Fable 5.1 ile ikinci danışma (a729e19 üzerine):
+  - Sayaç doğru. Model, kişisel krediye kullandığı kalıbı (1. deneme, ardından son tarihte taban) araç kredisine kopyalıyor. 46 ve "2 Kasım" istemde hâlâ görünüyordu: band satırı ("Band early … deadline 2026-11-02"), takvimdeki "deadline of p3" ve geçmişteki ham get_account.
+  - a729e19'daki `check_date → wrap_up` geçişi en üstte `"logic": "and"` kullanıyordu. workflow-format.md'ye göre en üst grup "or" olmazsa koşul sessizce düşüyor, yani kapanış düğümüne hiç girilemiyordu.
+- Düzeltme (02c6f7c):
+  - geçiş "or" yapıldı; `validate_workflow` artık en üstte "or" dışındaki her grubu hata sayıyor;
+  - STOP'a gelmiş bir ürünün son tarihi takvimden ve band satırından çıkıyor;
+  - `wrap_up` girişte tek mesaj yazıyor: müşterinin verdiği gün ve borcun tamamıyla geri okuma. Politikanın kabul etmediği bir gün (geçmiş, iş günü değil, son tarihten sonra) geri okunmuyor, önce o gün düzeltiliyor;
+  - ilk cevapta gün verip kısmen reddeden müşterinin reddetmediği ürünleri kendi teklifi sayılıyor (dated_products çıkarımı kaçsa da).
+- Simülasyon yuvası 0ea8137c yüzünden hâlâ kilitli. `PUT /api/v2/simulations/{id}` ile "completed" yapmayı denedim; izin sınıflandırıcısı ortak kaynağı değiştirmek diye reddetti, aşmadım. Bu yüzden ölçümleri `POST /api/v2/chat/message` üzerinden yapıyorum (simülasyon gerektirmiyor).
+- 02c6f7c'nin sohbet denemesi (sürüm 21, PUB-12'yi tur tur oynayan betikle): kapanış düğümüne STOP turunda girildi, geri okuma doğruydu, taban teklif edilmedi. Ama kişisel kredinin notu bir kez pazarlıkta (STOP anında), bir kez de kapanışta yazıldı; defter puanlayıcısı çift notu hata sayıyor.
+- Düzeltme (4879ddb): platform her aracın son argümanlarını `<araç>_args.<alan>` olarak değişken tablosunda tutuyor (canlıda görüldü). facts.py her çalışmada başarılı çağrıları ürün bazında `recorded_calls`'a ekliyor; kapanış satırları "add_note bu ürün için zaten yapıldı, tekrar çağırma" diyor. Geri okumadan önce kaydedilmiş bir söz varsa da geri okuma yapılmıyor.
+- 4879ddb (sürüm 22) sohbet denemeleri: PUB-12 4/4 defter PASS (3 sıralı, 1 toplu cevap). Bu dört denemede model notu pazarlıkta yazmadı, yani "zaten yapıldı" yolu canlıda henüz tetiklenmedi; birim testte duruyor.
