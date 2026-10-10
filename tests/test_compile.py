@@ -102,3 +102,16 @@ def test_tool_keys_given_as_api_paths_still_reach_the_tools():
     tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "create_promise")
     assert tool["function"]["description"] == "Call after a clear yes."
     assert tool["function"]["parameters"]["properties"]["body"]["properties"]["date"]["description"].startswith("a business day")
+
+
+def test_spec_accepts_a_nested_product_list():
+    api = json.loads(json.dumps(API))
+    _, op = next((path, item.get("post")) for path, item in api["paths"].items() if path.endswith("get_account"))
+    schema = op["responses"]["200"]["content"]["application/json"]["schema"]
+    schema["properties"] = {"ok": schema["properties"].get("ok", {"type": "boolean"}),
+                            "customer": {"type": "object", "properties": {"products": schema["properties"]["products"]}}}
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["list_field"] = "customer.products"
+    assert not [i for i in validate_spec(spec, api) if "list_field" in i or "product field" in i]
+    wf = compile_workflow(spec, api, BRIEFS)
+    assert wf["nodes"]["load_account"]["response_mapping"][0]["path"] == "data.customer.products"

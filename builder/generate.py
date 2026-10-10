@@ -36,7 +36,7 @@ SCHEMA = """Return exactly this shape:
   },
   "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}]},
   "account": {
-    "list_field": "<get_account response array of products>", "id_field": "...", "type_field": "...",
+    "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
     "amount_field": "<field with the amount owed now>", "segment_field": "<product field that selects the band, e.g. days late>",
     "floor_field_by_type": {"<product type>": "<field that is the minimum acceptable amount>"},
     "spoken_name_by_type": {"<product type>": "<how to name it aloud; insert product fields as <field_name>>"},
@@ -138,7 +138,11 @@ def validate_spec(spec, api):
                 issues.append(f"outcome {o} is not in close_call enum")
         _, account = operation(api, "get_account")
         acc = spec["account"]
-        items = _props(account, True).get(acc.get("list_field"), {})
+        # list_field may be a dotted path when the API nests the product array.
+        items, props = {}, _props(account, True)
+        for part in str(acc.get("list_field") or "").split("."):
+            items = props.get(part, {}) if isinstance(props, dict) else {}
+            props = items.get("properties", {})
         fields = items.get("items", {}).get("properties", {})
         if not items:
             issues.append(f"account.list_field {acc.get('list_field')} is not in get_account response")
