@@ -226,7 +226,7 @@ def run():
                 for k, v in tokens.items():
                     step = step.replace("<" + k + ">", v)
                 steps.append(step)
-            text += "; persuasion plan for this product, used one step per refusal or non-answer: " + " | ".join(steps)
+            text += "; PERSUASION PLAN, the complete list of proposals for this product after the first ask, one step per refusal or non-answer, nothing else in between: " + " | ".join(steps)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)
     deadlines = []

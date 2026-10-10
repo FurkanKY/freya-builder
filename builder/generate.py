@@ -64,7 +64,7 @@ Rules for the spec:
   next business day, a day-by-day calendar with holidays, band deadlines) and ACCOUNT FACTS (each product with id, spoken
   name, amount, band, deadline, floor, attempts). Refer to them in the checklists instead of describing how to compute.
 - opening_line must not contain any word that the brief allows only after a later event (for example a word the agent may say
-  only after a tool succeeds); express the same fact with a different word form, e.g. "we are ...ing this call" instead of "this call is ...ed".
+  only after a tool succeeds); express the same fact with a different word form, e.g. "we are ...ing this call" instead of "this call is ...ed" or "is being ...ed".
 - attempt_plan lists exactly the proposals the brief allows after the first ask, so its length matches the brief's attempt count;
   the code fills in the tokens per product. Leave it empty if the brief has no persuasion sequence.
 - Never include practice-case answers, customer data or the real clock."""
