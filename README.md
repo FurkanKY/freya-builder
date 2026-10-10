@@ -48,6 +48,21 @@ Each run writes `runs/<id>/trace.jsonl`, candidate JSON, platform exports, offic
 logs, and `result.json`. `runs/latest.json` points to the last run. A failed run may leave
 a recoverable candidate export, but is never reported as a successful submission.
 
+## Final briefs
+
+One run per brief, no manual step, no `--suite` (the public tests do not match unseen briefs):
+
+```bash
+.venv/bin/python -m builder.build --brief <final-brief.md> --tool-api <final-openapi.json> --slot final-1
+.venv/bin/python -m builder.submit <run_id> final-1
+```
+
+`builder.submit` checks that the run ended with an export whose hash matches `result.json` and
+copies `final-1.workflow.json` (the `freya.export_workflow` format), `final-1.trace.jsonl` and the
+plain-text `final-1.trace.txt` into `submission/`. Use a different `--slot` for each brief so the
+two agents never overwrite each other. Raw bank material in several files is passed as repeated
+`--brief` flags or as one directory.
+
 ## Tests
 
 ```bash
