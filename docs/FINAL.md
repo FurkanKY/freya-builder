@@ -1,0 +1,24 @@
+# Final runbook (Sunday 11 October 2026)
+
+Times are Istanbul time (UTC+3). Briefs open at 20:00, submissions close at 23:00.
+
+## Before 20:00
+- `git status` is clean, and the commit to use carries the tag `final-candidate` (`git checkout final-candidate`, or stay on the branch head if it is the same commit).
+- Tests pass: `PYTHONPATH=. PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q`.
+- `submission/` holds no rehearsal files.
+- No simulation is running in the workspace.
+
+## For each final brief (slot final-1 for the first, final-2 for the second)
+1. Put the brief files and the tool API file in a new folder `final/<n>/`, unchanged.
+2. Build it, with no manual step:
+   `.venv/bin/python -m builder.build --brief final/<n>/<brief files> --tool-api final/<n>/<api>.json --slot final-<n>`
+   One build takes about a minute; the limit is 30 minutes per run.
+3. Run 2 or 3 builds of the same brief. The model call that reads the brief is the one random step. Compare the specs:
+   `.venv/bin/python scripts/spec_diff.py <run_id> <run_id> [<run_id>]`
+   Where the runs differ, read that part of the brief and choose the run whose spec matches it. The builder code is never edited with anything from the brief. Only a generic crash fix is allowed, for example a table shape the parser did not expect.
+4. Submit the chosen run: `.venv/bin/python -m builder.submit <run_id> final-<n>`. This copies `final.workflow.json` (the `export_workflow` file) and that run's trace into `submission/`.
+
+## At the end
+- `submission/` holds `final-1.*` and `final-2.*`: workflow, trace.jsonl and trace.txt each.
+- Scan for secrets: no API key from `.env` appears in `submission/` or in the trace.
+- Submit the two workflow files, the code (this repository at the chosen commit) and the two traces before 23:00.
