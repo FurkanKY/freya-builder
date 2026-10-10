@@ -4,6 +4,7 @@ Bank facts (fields, enums, calendar, bands, outcomes, policy text) come only fro
 the supplied OpenAPI. This module holds platform mechanics, never bank policy.
 """
 import json
+import re
 import os
 from pathlib import Path
 
@@ -40,7 +41,7 @@ def _py_literal(text):
     return json.dumps(text).replace("{", "\\x7b").replace("}", "\\x7d")
 
 
-def _post_hook(tool, flag=None, answer_flag=None):
+def _post_hook(tool, flag=None, answer_flag=None, complete_value=None):
     lines = [
         "def _get(d, path):",
         "    for part in str(path).split('.'):",
@@ -60,10 +61,12 @@ def _post_hook(tool, flag=None, answer_flag=None):
     ]
     if tool == "verify_identity":
         lines += [
-            f"            if str(_get(d, {flag!r})).lower() == 'true':",
+            f"            if str(_get(d, {flag!r})).lower() in {sorted({'true', str(complete_value).lower()} - {'none', ''})!r}:",
             "                note = 'Identity is fully verified. Continue exactly as the policy says after verification.'",
             f"            elif str(_get(d, {(answer_flag or 'verified')!r})).lower() == 'true':",
             "                note = 'This answer is correct. Ask the next security question as the policy says.'",
+            f"            elif _get(d, {(answer_flag or 'verified')!r}) is None:",
+            "                note = 'The service did not say whether this answer was correct, and identity is not verified yet. If the response shows fewer tries left than before, treat it as wrong; otherwise ask the next security question as the policy says.'",
             "            else:",
             "                note = 'This answer is NOT correct. Apply the policy for a wrong answer; wrong_answers_left shows what remains.'",
             "            if d.get('hint'):",
@@ -119,19 +122,32 @@ def _leaf(schema, default, description=None):
 HTTP_METHODS = ("post", "put", "patch", "get", "delete")
 
 
+def _norm(name):
+    return re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")
+
+
+def _find(api, tool):
+    """The (path, method) of a tool: by path tail, then operationId, then a normalised path tail (get-account)."""
+    paths = api["paths"]
+    for test in (lambda p, m, op: p.strip("/").split("/")[-1] == tool,
+                 lambda p, m, op: _norm(op.get("operationId")) == tool,
+                 lambda p, m, op: _norm(p.strip("/").split("/")[-1]) == tool):
+        for path, item in paths.items():
+            for method in HTTP_METHODS:
+                if isinstance(item.get(method), dict) and test(path, method, item[method]):
+                    return path, method
+    return None, None
+
+
 def _method(api, tool):
-    for path, item in api["paths"].items():
-        if path.strip("/").split("/")[-1] == tool:
-            return next((m for m in HTTP_METHODS if m in item), "post")
-    return "post"
+    return _find(api, tool)[1] or "post"
 
 
 def operation(api, tool):
-    for path, item in api["paths"].items():
-        if path.strip("/").split("/")[-1] == tool:
-            base = api["servers"][0]["url"].rstrip("/")
-            return base + "/" + path.lstrip("/"), item[_method(api, tool)] if _method(api, tool) in item else next(iter(item.values()))
-    raise ValueError(f"Tool API has no operation for {tool}")
+    path, method = _find(api, tool)
+    if path is None:
+        raise ValueError(f"Tool API has no operation for {tool}")
+    return api["servers"][0]["url"].rstrip("/") + "/" + path.lstrip("/"), api["paths"][path][method]
 
 
 def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
@@ -169,7 +185,7 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
     tool_obj = {"type": "function", "config": {"timeoutMs": 12000, "maxRetries": max_retries}, "function": function,
-                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"))}
+                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"))}
     if tool == "close_call":
         silent = [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
         tool_obj["pre_process_code"] = (
@@ -181,8 +197,9 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     return tool_obj
 
 
-def _true(variable):
-    return [{"variable": variable, "operator": "equals", "operand": "true"}, {"variable": variable, "operator": "equals", "operand": "True"}]
+def _true(variable, value=None):
+    operands = ["true", "True"] + ([str(value)] if value not in (None, "", True, "true", "True") else [])
+    return [{"variable": variable, "operator": "equals", "operand": o} for o in operands]
 
 
 def _closed_transition(target="hang_up"):
@@ -248,7 +265,7 @@ def compile_workflow(spec, api, briefs):
             "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in pre_tools],
             "max_node_turns": 80, "max_turn_transition": "hang_up",
             "transitions": [
-                {"target_node": "load_account", "description": "identity fully verified", "condition": {"logic": "or", "conditions": _true(f"verify_identity_response.data.{flag}")}},
+                {"target_node": "load_account", "description": "identity fully verified", "condition": {"logic": "or", "conditions": _true(f"verify_identity_response.data.{flag}", (spec.get("identity") or {}).get("complete_value"))}},
                 _closed_transition(),
             ],
         },

@@ -33,7 +33,8 @@ SCHEMA = """Return exactly this shape:
   "opening_line": "<the exact first sentence(s) the agent says, satisfying the opening rules; may use {{var}} of call_variables only>",
   "identity": {
     "questions": [{"field": "<verify_identity field enum value>", "ask": "<how to ask it>", "answer_format": "<format the tool needs and how to convert what callers say>"}],
-    "complete_flag": "<boolean property of the verify_identity response that means the whole identity check passed; dotted path if nested>",
+    "complete_flag": "<property of the verify_identity response that shows the whole identity check passed; dotted path if nested>",
+    "complete_value": "<only if complete_flag is not a boolean: its value that means passed, e.g. verified; otherwise omit>",
     "answer_flag": "<boolean property of the verify_identity response that means this one answer was correct; dotted path if nested. When the names alone must decide: the per-answer flag is named like the check itself (verified, correct, match), the whole-check flag names the overall state (all_verified, passed, complete, identity_confirmed)>"
   },
   "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}]},
@@ -148,7 +149,11 @@ def validate_spec(spec, api):
         if not node:
             issues.append("identity.complete_flag is not a verify_identity response property")
         elif node.get("type") not in (None, "boolean"):
-            issues.append("identity.complete_flag must be a boolean property that becomes true only when the whole check passed")
+            value = spec["identity"].get("complete_value")
+            if value in (None, ""):
+                issues.append("identity.complete_flag is not boolean: set identity.complete_value to the value that means the whole check passed")
+            elif node.get("enum") and str(value) not in [str(v) for v in node["enum"]]:
+                issues.append(f"identity.complete_value {value} is not in the enum {node['enum']} of {spec['identity'].get('complete_flag')}")
         _, close = operation(api, "close_call")
         outcomes = _props(close).get("outcome", {}).get("enum") or []
         for o in (spec.get("outcomes") or {}).get("no_reason", []):

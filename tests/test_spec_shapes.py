@@ -125,3 +125,37 @@ def test_floor_can_be_a_percentage_a_fixed_amount_or_a_field():
     assert "floor (minimum_payment) 90" in _facts(spec, [product])
     spec["account"]["floor_field_by_type"] = {"credit_card": "10% of nonsense"}
     assert any("floor" in i for i in validate_spec(spec, API))
+
+
+def test_clock_formats_and_operation_ids():
+    product = {"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0}
+    wf = compile_workflow(SPEC, API, BRIEFS)
+    code = wf["nodes"]["prepare"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    for raw in ("2026-10-21T09:00", "2026-10-21 09:00:00Z", "2026-10-21T09:00:00+02:00", "21/10/2026 09:00", "21.10.2026", "2026/10/21"):
+        variables = {"now": raw, "account_products": json.dumps([product])}
+        exec(compile(code, "facts", "exec"), {"vars": variables})
+        assert variables["date_facts"].startswith("Now: 2026-10-21"), raw
+    api = json.loads(json.dumps(API))
+    api["paths"] = {"/v2/" + p.strip("/").replace("_", "-"): {m: dict(op, operationId=p.strip("/").split("/")[-1]) for m, op in v.items()} for p, v in api["paths"].items()}
+    renamed = compile_workflow(SPEC, api, BRIEFS)
+    assert validate_workflow(renamed, api) == []
+
+
+def test_identity_completion_can_be_a_status_value_and_a_missing_answer_flag_is_neutral():
+    api = json.loads(json.dumps(API))
+    path = next(p for p in api["paths"] if p.endswith("verify_identity"))
+    schema = api["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+    schema["properties"] = {"ok": {"type": "boolean"}, "status": {"type": "string", "enum": ["pending", "verified", "failed"]}, "correct": {"type": "boolean"}}
+    spec = json.loads(json.dumps(SPEC))
+    spec["identity"].update({"complete_flag": "status", "answer_flag": "correct"})
+    spec["identity"].pop("complete_value", None)
+    assert any("complete_value" in i for i in validate_spec(spec, api))
+    spec["identity"]["complete_value"] = "verified"
+    assert not [i for i in validate_spec(spec, api) if "identity" in i]
+    wf = compile_workflow(spec, api, BRIEFS)
+    gate = wf["nodes"]["identify"]["transitions"][0]["condition"]["conditions"]
+    assert {"variable": "verify_identity_response.data.status", "operator": "equals", "operand": "verified"} in gate
+    hook = tool(wf, "identify", "verify_identity")["post_process_code"]
+    assert "fully verified" in run_hook(hook, {"ok": True, "status": "verified", "correct": True})
+    assert "This answer is correct" in run_hook(hook, {"ok": True, "status": "pending", "correct": True})
+    assert "did not say" in run_hook(hook, {"ok": True, "status": "pending"})

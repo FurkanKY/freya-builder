@@ -15,13 +15,18 @@ def _spec():
 
 
 def _today(spec):
+    """The call's clock: ISO (T or space, optional seconds, Z or offset), YYYY/MM/DD, or day-first DD/MM/YYYY or DD.MM.YYYY."""
     raw = str(vars.get(spec.get("now_variable") or "now") or "").strip()
+    m = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ,]+(\d{1,2}):(\d{2}))?", raw)
+    if m:
+        y, mo, d, h, mi = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
+    else:
+        m = re.search(r"(\d{1,2})[/.](\d{1,2})[/.](\d{4})(?:[T ,]+(\d{1,2}):(\d{2}))?", raw)
+        if not m:
+            return None
+        d, mo, y, h, mi = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
     try:
-        return datetime.datetime.fromisoformat(raw[:16])
-    except Exception:
-        pass
-    try:
-        return datetime.datetime.fromisoformat(raw[:10])
+        return datetime.datetime(int(y), int(mo), int(d), int(h or 0), int(mi or 0))
     except Exception:
         return None
 
