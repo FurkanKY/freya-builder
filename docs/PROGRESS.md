@@ -148,3 +148,16 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - tarihler müşteriye sözle söyleniyor;
   - düşünme talimatı yalnızca reasoning açıkken ekleniyor.
 - Ek düzeltmeler: HTTP hatası hiçbir zaman başarı sayılmıyor (9db3e1e); son tarihler farklıysa en erken olan söyleniyor (5484e27).
+
+## Aşama 12 — ACCOUNT FACTS canlıda hiç çalışmıyormuş
+- Build 20261010T171647-693386Z (2e46300), build testi 11/13. PUB-07 geçti; tarih kontrolü canlıda doğrulandı:
+  - extraction "Monday the 26th" → `named_date=2026-10-26`;
+  - `check_date` kod düğümü çalıştı, negotiate'e dönüşte tek cevap geldi ("Monday, 26 October is a bank holiday. Would Tuesday, 27 October work for you?");
+  - çift cevap ve susma yok;
+  - araç sonucundan sonra sapma olmadı.
+- **Bulgu:** negotiate'e girişte `facts_state=no_products` → ACCOUNT FACTS "The product list could not be read by code" diyordu. Eski build'lerin çağrılarında (6b67cef, 5484e27) da durum aynı.
+  - Sebep: api_request düğümünün sonucu DÜĞÜM adıyla düzleşiyor (`load_account_response.data.products.0.past_due`); response_mapping değişkeni (`account_products`) oluşmuyor; kod `get_account_response...` arıyordu.
+  - Yani ajan şimdiye kadar ürün bazlı son tarih, asgari tutar ve ikna planı olmadan, ham get_account sonucundan kendisi hesaplıyordu. Deneme sayısı ve PUB-13 tarih hatalarının, reasoning açıkken yaşanan uzun düşünmenin de büyük olasılıkla ana sebebi bu.
+  - Düzeltme (4428038): ürünler `*_response.data.<liste>` biçimindeki her anahtardan okunuyor (en dolu kaynak, load_account öncelikli). Testi eklendi.
+- Ayrıca kod düğümünün `named_date=""` yazması kalıcı olmuyor; artık "none" yazılıyor ve geçiş "none"u da dışlıyor.
+- Ders: yerel testler canlı değişken adlarını varsaymıştı. Canlı değişken tablosu (route_evaluated.variable_table) her yeni mekanizmada kontrol edilmeli.
