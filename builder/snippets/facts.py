@@ -29,7 +29,10 @@ def _today(spec):
 def _calendar(spec):
     cal = spec.get("calendar") or dict()
     names = cal.get("business_weekdays") or WEEKDAYS[:5]
-    workdays = set(WEEKDAYS.index(n) for n in names if n in WEEKDAYS)
+    lowered = [str(n).strip().lower()[:3] for n in (names if isinstance(names, list) else [names])]
+    workdays = set(i for i, d in enumerate(WEEKDAYS) if d.lower()[:3] in lowered)
+    if not workdays:
+        workdays = set(range(5))
     holidays = dict()
     for h in cal.get("holidays") or []:
         if isinstance(h, dict):
@@ -149,6 +152,23 @@ def _money(value):
     return ("%.2f" % v).rstrip("0").rstrip(".") if v != int(v) else str(int(v))
 
 
+def _for_type(mapping, kind):
+    # Exact product type first, then a case-insensitive match, then a catch-all entry.
+    if not isinstance(mapping, dict):
+        return mapping if isinstance(mapping, str) else None
+    if kind in mapping:
+        return mapping[kind]
+    for k, v in mapping.items():
+        if str(k).strip().lower() == kind.strip().lower():
+            return v
+    for k in ("*", "all", "any", "default"):
+        if k in mapping:
+            return mapping[k]
+    if len(mapping) == 1:
+        return list(mapping.values())[0]
+    return None
+
+
 def _spoken(template, product):
     out = str(template or product.get("type") or "product")
     for k, v in product.items():
@@ -212,11 +232,11 @@ def run():
             if seg_value is not None and (lo is None or seg_value >= lo) and (hi is None or seg_value <= hi):
                 band = b
                 break
-        floor_field = floors.get(kind)
+        floor_field = _for_type(floors, kind)
         floor = p.get(floor_field) if floor_field else None
         dl = band.get("_deadline") if band else None
         product_deadlines.append(dl)
-        text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(names.get(kind), p)
+        text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(_for_type(names, kind), p)
         text += "; amount owed now (" + amount_field + ") " + _money(p.get(amount_field))
         text += "; " + seg + " " + str(p.get(seg))
         if band:

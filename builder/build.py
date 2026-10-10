@@ -78,12 +78,20 @@ async def execute(a):
             errors=validate_workflow(candidate["workflow"],inputs["api"])
             if not errors: break
             trace.emit("validation_failed",errors=errors)
-            if attempt==1: raise ValueError("Workflow still invalid after one structural repair")
-            candidate=await generate(inputs,KIT,budget,trace,model,run_dir,previous=candidate,feedback={"structural_errors":errors})
+            if attempt==1:
+                # The platform dry run below is the final arbiter; a local check alone never discards the only candidate.
+                trace.emit("validation_still_failed",errors=errors,action="platform dry run decides"); break
+            try:
+                candidate=await generate(inputs,KIT,budget,trace,model,run_dir,previous=candidate,feedback={"structural_errors":errors})
+            except Exception as exc:
+                if "Secret" in str(exc): raise
+                trace.emit("structural_repair_failed",error_type=type(exc).__name__,detail=str(exc)[:300],action="keep first candidate"); break
+        client.finalizing=True
         client.validate(candidate["workflow"])
         write_json(run_dir/"candidate-a.json",candidate)
         deployment=client.publish(slot+"-a",candidate["workflow"])
         checkpoint=client.export(deployment["workflow_id"])
+        client.finalizing=False
         write_json(run_dir/"candidate-a.workflow.json",checkpoint)
         selected={"label":"a","candidate":candidate,"deployment":deployment,"export":checkpoint}
         trace.emit("workflow_published",**deployment,candidate_sha256=digest(candidate["workflow"]),nodes=len(candidate["workflow"]["nodes"]),tools=sum("function" in node for _,node in walk(candidate["workflow"])))

@@ -19,6 +19,8 @@ class Client:
         if not key: raise ValueError("FREYA_API_KEY is missing")
         self.key,self.budget,self.workspace_id,self.state_path,self.url=key,budget,workspace_id,Path(state_path),url.rstrip('/')
         self.transport=transport
+        # Set while publishing the first candidate: those calls may use the finalize reserve.
+        self.finalizing=False
 
     def api(self,method,path,body=None,finalizing=False,**params):
         # Transient failures (5xx, dropped connections, timeouts) get two more tries; 4xx never retries.
@@ -30,7 +32,7 @@ class Client:
                 time.sleep(2*(attempt+1))
 
     def _api(self,method,path,body,finalizing,params):
-        timeout=min(30,self.budget.require(1,finalizing=finalizing))
+        timeout=min(30,self.budget.require(1,finalizing=finalizing or self.finalizing))
         if self.transport:
             return self.transport(method,path,body,params,timeout)
         query="?"+urllib.parse.urlencode(params) if params else ""

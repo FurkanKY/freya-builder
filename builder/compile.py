@@ -40,8 +40,13 @@ def _py_literal(text):
     return json.dumps(text).replace("{", "\\x7b").replace("}", "\\x7d")
 
 
-def _post_hook(tool, flag=None):
+def _post_hook(tool, flag=None, answer_flag=None):
     lines = [
+        "def _get(d, path):",
+        "    for part in str(path).split('.'):",
+        "        d = d.get(part) if isinstance(d, dict) else None",
+        "    return d",
+        "",
         "try:",
         "    if isinstance(result, dict):",
         "        result.pop('header', None)",
@@ -49,14 +54,15 @@ def _post_hook(tool, flag=None):
         "        if not isinstance(d, dict):",
         "            d = dict()",
         "            result['data'] = d",
-        "        ok = d.get('ok')",
+        # Banks name the success flag differently; without one, a reply with no error counts as success.
+        "        ok = d.get('ok') if 'ok' in d else d.get('success') if 'success' in d else (not d.get('error'))",
         "        if ok is True or str(ok).lower() == 'true':",
     ]
     if tool == "verify_identity":
         lines += [
-            f"            if str(d.get('{flag}')).lower() == 'true':",
+            f"            if str(_get(d, {flag!r})).lower() == 'true':",
             "                note = 'Identity is fully verified. Continue exactly as the policy says after verification.'",
-            "            elif str(d.get('verified')).lower() == 'true':",
+            f"            elif str(_get(d, {(answer_flag or 'verified')!r})).lower() == 'true':",
             "                note = 'This answer is correct. Ask the next security question as the policy says.'",
             "            else:",
             "                note = 'This answer is NOT correct. Apply the policy for a wrong answer; wrong_answers_left shows what remains.'",
@@ -96,7 +102,13 @@ def _leaf(schema, default, description=None):
     leaf = {"type": schema.get("type", "string"), "default": default}
     if schema.get("enum"):
         leaf["enum"] = list(schema["enum"])
-    text = description or schema.get("description")
+    # Structured fields keep their shape so the model can fill them.
+    if leaf["type"] in ("array", "object"):
+        for key in ("items", "properties", "required"):
+            if key in schema:
+                leaf[key] = json.loads(json.dumps(schema[key]))
+    # The API's own description (formats, units) comes first; the brief's hint adds to it.
+    text = " ".join(t for t in (schema.get("description"), description) if t)
     if schema.get("enum"):
         text = (text + " " if text else "") + "One of: " + ", ".join(map(str, schema["enum"])) + "."
     if text:
@@ -104,11 +116,21 @@ def _leaf(schema, default, description=None):
     return leaf
 
 
+HTTP_METHODS = ("post", "put", "patch", "get", "delete")
+
+
+def _method(api, tool):
+    for path, item in api["paths"].items():
+        if path.strip("/").split("/")[-1] == tool:
+            return next((m for m in HTTP_METHODS if m in item), "post")
+    return "post"
+
+
 def operation(api, tool):
     for path, item in api["paths"].items():
         if path.strip("/").split("/")[-1] == tool:
             base = api["servers"][0]["url"].rstrip("/")
-            return base + "/" + path.lstrip("/"), item.get("post") or next(iter(item.values()))
+            return base + "/" + path.lstrip("/"), item[_method(api, tool)] if _method(api, tool) in item else next(iter(item.values()))
     raise ValueError(f"Tool API has no operation for {tool}")
 
 
@@ -120,28 +142,34 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     reserved = RESERVED | call_vars
     body = {}
     for field, prop in schema.get("properties", {}).items():
-        if field in call_vars:
+        # In the identity check only identifiers are baked; anything else there is the caller's answer.
+        identifier = field == "id" or field.endswith(("_id", "_ref")) or field == "customer_id"
+        if field in call_vars and (tool != "verify_identity" or identifier):
             # Call identifiers such as customer_id are baked from the call variable of the same name.
             body[field] = {"type": prop.get("type", "string"), "default": "{{" + field + "}}"}
         elif model_filled:
             # A placeholder with no variable behind it leaves the field to the model (verified pattern).
             name = f"{tool}_{field}" if field in reserved else field
             body[field] = _leaf(prop, "{{" + name + "}}", hints.get(field))
+        elif field in schema.get("required", []):
+            # A code-run tool has no model to fill a required field; take the variable of the same name.
+            body[field] = {"type": prop.get("type", "string"), "default": "{{" + field + "}}"}
     function = {
         "name": tool,
         "handler": "__function__:api_call",
         "description": description or op.get("summary") or tool,
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "default": url},
-            "method": {"type": "string", "default": "POST"},
+            "method": {"type": "string", "default": _method(api, tool).upper()},
             "connect_retries": {"type": "number", "default": 0 if max_retries == 0 else 2},
             "headers": {"type": "object", "properties": {"Content-Type": {"type": "string", "default": "application/json"}}},
             "body": {"type": "object", "properties": body, "required": [f for f in schema.get("required", []) if f not in call_vars]},
         }},
     }
-    flag = (spec.get("identity") or {}).get("complete_flag") or "all_verified"
+    identity = spec.get("identity") or {}
+    flag = identity.get("complete_flag") or "all_verified"
     tool_obj = {"type": "function", "config": {"timeoutMs": 12000, "maxRetries": max_retries}, "function": function,
-                "post_process_code": _post_hook(tool, flag)}
+                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"))}
     if tool == "close_call":
         silent = [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
         tool_obj["pre_process_code"] = (
@@ -162,16 +190,10 @@ def _closed_transition(target="hang_up"):
             [{"variable": "close_call_success_count", "operator": "greater_than", "operand": 0}]}}
 
 
-def _tool_key(key):
-    # The model sometimes keys tools by API path ("/v1/close_call"); the compiler looks them up by tool name.
-    return str(key).strip().strip("/").split("/")[-1]
-
-
 def compile_workflow(spec, api, briefs):
-    spec = dict(spec)
-    for section in ("tool_descriptions", "tool_field_hints"):
-        if isinstance(spec.get(section), dict):
-            spec[section] = {_tool_key(k): v for k, v in spec[section].items()}
+    from .spec import normalize_spec, resolve_refs
+    api = resolve_refs(api)
+    spec = normalize_spec(spec, api)
     policy = spec.get("policy") or {}
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"

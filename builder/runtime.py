@@ -69,9 +69,11 @@ def load_inputs(briefs, api):
     documents = []
     for path in briefs:
         path = Path(path)
-        files = sorted(path.glob("**/*.md")) if path.is_dir() else [path]
+        # Raw bank material can come as mails, extracts or code lists in several text formats.
+        kinds = (".md", ".txt", ".eml", ".csv", ".html", ".htm", ".rst")
+        files = sorted(f for f in path.glob("**/*") if f.is_file() and f.suffix.lower() in kinds) if path.is_dir() else [path]
         if not files:
-            raise ValueError("Brief directory contains no Markdown files")
+            raise ValueError("Brief directory contains no text files")
         for file in files:
             text = file.read_text()
             documents.append({"path": file.name, "text": text, "sha256": hashlib.sha256(text.encode()).hexdigest()})
@@ -104,6 +106,8 @@ def validate_workflow(workflow, api):
         issues.append("agent_config must be omitted; the event controls the model")
     global_nodes = workflow.get("global_nodes", {})
     targets = set(nodes) | (set(global_nodes) if isinstance(global_nodes, dict) else set()) | {"__previous__"}
+    from .spec import resolve_refs
+    api = resolve_refs(api)
     allowed_urls = {s["url"].rstrip("/") + "/" + p.lstrip("/"): v for s in api.get("servers", []) for p, v in api.get("paths", {}).items()}
     for location, item in walk(workflow):
         for key in ("target_node", "passthrough_default_transition", "max_turn_transition"):
