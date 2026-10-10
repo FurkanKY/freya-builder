@@ -207,6 +207,47 @@ def _spoken(template, product):
     return out
 
 
+def _day_line(d, today, workdays, holidays, deadlines):
+    text = d.isoformat() + " " + WEEKDAYS[d.weekday()]
+    if d < today:
+        text += ": in the PAST"
+    elif _is_business(d, workdays, holidays):
+        text += ": business day"
+    else:
+        text += ": HOLIDAY (" + holidays[d.isoformat()] + "), NOT a business day" if d.isoformat() in holidays else ": weekend, NOT a business day"
+        prv = _previous_business(d, workdays, holidays)
+        if prv and prv >= today:
+            text += "; previous business day " + prv.isoformat() + " " + WEEKDAYS[prv.weekday()]
+        nxt = _next_business(d, workdays, holidays)
+        if nxt:
+            text += "; next business day " + nxt.isoformat() + " " + WEEKDAYS[nxt.weekday()]
+            late = [name for name, dl in deadlines if nxt > dl]
+            if late:
+                text += " (AFTER the deadline of " + ", ".join(late) + ")"
+    inside = [name for name, dl in deadlines if d <= dl]
+    after = [name for name, dl in deadlines if d > dl]
+    if inside:
+        text += "; on or before the deadline of " + ", ".join(inside)
+    if after:
+        text += "; AFTER the deadline of " + ", ".join(after) + " (" + "; ".join(name + " deadline " + dl.isoformat() + " " + WEEKDAYS[dl.weekday()] for name, dl in deadlines if d > dl) + ")"
+    return text
+
+
+def _named_day(today, workdays, holidays, deadlines):
+    """The day the extraction model read from the customer's last message, checked against the calendar, then cleared."""
+    raw = str(vars.get("named_date") or "").strip()
+    if not raw:
+        return
+    vars["named_date"] = ""
+    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", raw)
+    try:
+        day = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except Exception:
+        return
+    vars["named_day_facts"] = ("The last exact day the customer named, as read by code: " + _day_line(day, today, workdays, holidays, deadlines)
+                               + ". If the customer named only a vague period, or no day, ignore this line.")
+
+
 def run():
     spec = _spec()
     workdays, holidays = _calendar(spec)
@@ -228,7 +269,7 @@ def run():
         lines.append("Next business day after today: " + _label(nb) + ".")
     lb = _last_business_of_week(today, workdays, holidays)
     if lb:
-        lines.append("Last business day of the current calendar week (Monday to Sunday): " + _label(lb) + ".")
+        lines.append("Last business day of the current calendar week (Monday to Sunday): " + _label(lb) + ". Today " + ("IS" if lb == today else "is NOT") + " that day.")
     lbn = _last_business_of_week(today + datetime.timedelta(days=7), workdays, holidays)
     if lbn:
         lines.append("Last business day of the following calendar week: " + _label(lbn) + ".")
@@ -286,8 +327,13 @@ def run():
                 step = str(step)
                 for k, v in tokens.items():
                     step = step.replace("<" + k + ">", v)
-                steps.append(step)
-            text += "; PERSUASION PLAN, the complete list of proposals for this product after the first ask, one step per refusal or non-answer, nothing else in between: " + " | ".join(steps)
+                # The spec often numbers its own steps; the chain below numbers them again.
+                steps.append(re.sub(r"^\s*(attempt|step)\s*\d+\s*[:.)-]\s*", "", step, flags=re.I))
+            chain = ["after the first ask is refused: attempt 1: " + steps[0]]
+            for i in range(1, len(steps)):
+                chain.append("after attempt " + str(i) + " is refused: attempt " + str(i + 1) + ": " + steps[i])
+            chain.append("after attempt " + str(len(steps)) + " is refused: STOP, no more payment proposals for this product; apply the policy for a product without a promise")
+            text += "; PERSUASION PLAN, the complete list of proposals for this product, one step per refusal or non-answer, nothing else in between: " + " | ".join(chain)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)
     deadlines = []
@@ -299,27 +345,12 @@ def run():
     days = []
     d = today
     while d <= far + datetime.timedelta(days=7):
-        text = d.isoformat() + " " + WEEKDAYS[d.weekday()]
-        if _is_business(d, workdays, holidays):
-            text += ": business day"
-        else:
-            text += ": HOLIDAY (" + holidays[d.isoformat()] + "), NOT a business day" if d.isoformat() in holidays else ": weekend, NOT a business day"
-            prv = _previous_business(d, workdays, holidays)
-            if prv:
-                text += "; previous business day " + prv.isoformat() + " " + WEEKDAYS[prv.weekday()]
-            nxt = _next_business(d, workdays, holidays)
-            if nxt:
-                text += "; next business day " + nxt.isoformat() + " " + WEEKDAYS[nxt.weekday()]
-        inside = [name for name, dl in deadlines if d <= dl]
-        after = [name for name, dl in deadlines if d > dl]
-        if inside:
-            text += "; on or before the deadline of " + ", ".join(inside)
-        if after:
-            text += "; AFTER the deadline of " + ", ".join(after)
-        days.append(text)
+        days.append(_day_line(d, today, workdays, holidays, deadlines))
         d = d + datetime.timedelta(days=1)
     lines.append("Calendar, one line per day from today. When the customer names a day, find its line and apply the policy to what the line says:\n" + "\n".join(days))
     vars["date_facts"] = "\n".join(lines)
+    vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
+    _named_day(today, workdays, holidays, deadlines)
     count = len(rows)
     known = [(name, dl) for name, dl in deadlines if not name.startswith("band ")]
     if len(known) > 1 and len(set(dl for _, dl in known)) > 1:

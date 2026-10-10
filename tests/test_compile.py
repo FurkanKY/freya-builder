@@ -134,3 +134,40 @@ def test_facts_name_the_earliest_of_differing_deadlines():
     assert out["product_count"] == "2"
     same = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products[:1] + [dict(products[1], days_late=5)])})
     assert "Deadlines differ" not in same["account_facts"]
+
+
+def test_named_day_is_checked_in_code_and_cleared():
+    wf = compile_workflow(SPEC, API, BRIEFS)
+    assert validate_workflow(wf, API) == []
+    negotiate = wf["nodes"]["negotiate"]
+    assert negotiate["extraction_schema"][0]["name"] == "named_date"
+    assert negotiate["extraction_schema"][0]["type"] == "date"
+    assert [t["target_node"] for t in negotiate["transitions"]] == ["hang_up", "check_date"]
+    assert wf["nodes"]["check_date"]["passthrough_default_transition"] == "negotiate"
+    assert "{{named_day_facts}}" in negotiate["task_message"]
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0}]
+    out = run_facts(wf, {"now": "2026-10-21T09:00", "account_products": json.dumps(products)})
+    assert out["named_day_facts"] == "No exact day named yet."
+    out = run_facts(wf, dict(out, named_date="2026-10-26"))
+    assert out["named_date"] == ""
+    assert "2026-10-26 Monday: HOLIDAY (bank holiday), NOT a business day; previous business day 2026-10-23 Friday; next business day 2026-10-27 Tuesday; on or before the deadline of p1" in out["named_day_facts"]
+    out = run_facts(wf, dict(out, named_date="2026-11-07"))
+    assert "2026-11-07 Saturday: weekend, NOT a business day" in out["named_day_facts"]
+    assert "AFTER the deadline of p1 (p1 deadline 2026-10-29 Thursday)" in out["named_day_facts"]
+    # A cleared or unreadable date leaves the last check in place and never raises.
+    out = run_facts(wf, dict(out, named_date="someday"))
+    assert out["named_date"] == "" and "2026-11-07" in out["named_day_facts"]
+
+
+def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["bands"][0]["attempt_plan"] = ["attempt 1: propose <amount> by <last_business_day_this_week>", "Attempt 2 - propose <floor> by <deadline>"]
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "past_due": 300.0, "days_late": 4, "minimum_payment": 90.0}]
+    out = run_facts(wf, {"now": "2026-10-23T09:00", "account_products": json.dumps(products)})
+    facts = out["account_facts"]
+    assert "after the first ask is refused: attempt 1: propose 300 by 2026-10-23 (Friday, 23 October 2026)" in facts
+    assert "after attempt 1 is refused: attempt 2: propose 90 by" in facts
+    assert "after attempt 2 is refused: STOP, no more payment proposals for this product" in facts
+    assert "attempt 1: attempt 1" not in facts
+    assert "Today IS that day." in out["date_facts"]
