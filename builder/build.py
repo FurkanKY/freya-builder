@@ -15,7 +15,7 @@ if __package__ in (None, ""):
 
 from dotenv import dotenv_values
 from .runtime import Budget, Trace, digest, load_inputs, validate_workflow, write_json, select_candidate, walk
-from .generate import generate
+from .generate import generate, generate_consensus
 from .freya_client import Client
 from .evaluate import assert_public_suite, run_evaluation, transcript_digest
 
@@ -47,10 +47,18 @@ def parse_args(argv=None):
     return a
 
 
+def reads_wanted(value):
+    """How many parallel reads of the briefs: BUILDER_READS when it is a number, clamped to 1..5, else 3."""
+    try:
+        return max(1, min(5, int(str(value).strip())))
+    except ValueError:
+        return 3
+
+
 async def execute(a):
     budget=Budget(a.seconds)
     env={k:v for k,v in dotenv_values(ROOT/".env").items() if v is not None}
-    for key in ("FREYA_API_KEY","FREYA_BANK_TEAM_KEY","FREYA_WORKSPACE_ID","FREYA_API_URL","BUILDER_MODEL"):
+    for key in ("FREYA_API_KEY","FREYA_BANK_TEAM_KEY","FREYA_WORKSPACE_ID","FREYA_API_URL","BUILDER_MODEL","BUILDER_READS"):
         if os.environ.get(key): env[key]=os.environ[key]
     if not env.get("FREYA_API_KEY"): raise ValueError("Set FREYA_API_KEY in project .env")
     if a.suite and len(env.get("FREYA_BANK_TEAM_KEY", ""))<16: raise ValueError("Practice team key must contain at least 16 characters")
@@ -65,7 +73,7 @@ async def execute(a):
     model=a.model or env.get("BUILDER_MODEL") or "sonnet"
     commit=subprocess.run(["git","rev-parse","HEAD"],cwd=ROOT,capture_output=True,text=True).stdout.strip()
     dirty=bool(subprocess.run(["git","status","--porcelain"],cwd=ROOT,capture_output=True,text=True).stdout)
-    trace.emit("build_start",run_id=run_id,input_fingerprint=inputs["fingerprint"],kit_version=3,commit=commit,dirty=dirty,model=model,seconds=a.seconds)
+    trace.emit("build_start",run_id=run_id,input_fingerprint=inputs["fingerprint"],kit_version=3,commit=commit,dirty=dirty,model=model,seconds=a.seconds,reads=reads_wanted(env.get("BUILDER_READS")))
     write_json(ROOT/"runs/latest.json",{"run_id":run_id,"path":str(run_dir),"status":"running"})
     write_json(run_dir/"inputs.json",inputs)
     client=Client(env["FREYA_API_KEY"],budget,workspace_id=env.get("FREYA_WORKSPACE_ID"),state_path=ROOT/"runs/platform-state.json",url=env.get("FREYA_API_URL","https://staging-app.freyavoice.ai"))
@@ -73,7 +81,7 @@ async def execute(a):
     selected=None
     report={"status":"not_evaluated"}
     try:
-        candidate=await generate(inputs,KIT,budget,trace,model,run_dir)
+        candidate=await generate_consensus(inputs,KIT,budget,trace,model,run_dir,reads=reads_wanted(env.get("BUILDER_READS")))
         for attempt in range(2):
             errors=validate_workflow(candidate["workflow"],inputs["api"])
             if not errors: break

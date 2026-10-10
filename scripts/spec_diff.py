@@ -31,12 +31,25 @@ def flat(value, prefix=""):
 TEXT = ("policy", "tool_descriptions", "tool_field_hints")
 
 
+def _labels(runs):
+    """Short names for the output: a run id as given, a spec file by the fewest parent folders that tell the files apart."""
+    paths = [Path(r) for r in runs]
+    for depth in (1, 2, 3):
+        labels = ["/".join(p.parts[-1 - depth:-1]) if p.is_file() else str(p) for p in paths]
+        if len(set(labels)) == len(labels):
+            return labels
+    return runs
+
+
 def main(args):
     runs = [a for a in args if not a.startswith("--")]
     specs = []
     for run in runs:
-        data = json.loads((ROOT/"runs"/run/"candidate-a.json").read_text())
-        specs.append(flat(data.get("spec") or {}))
+        # A run id, or a spec file written by another tool.
+        path = Path(run) if Path(run).is_file() else ROOT/"runs"/run/"candidate-a.json"
+        data = json.loads(path.read_text())
+        specs.append(flat(data.get("spec", data) if isinstance(data, dict) else {}))
+    labels = _labels(runs)
     keys = sorted(k for k in set().union(*specs) if "--all" in args or not k.startswith(TEXT))
     same = 0
     for key in keys:
@@ -45,8 +58,8 @@ def main(args):
             same += 1
             continue
         print(f"== {key}")
-        for run, v in zip(runs, values):
-            print(f"   {run}: {v[:400]}")
+        for label, v in zip(labels, values):
+            print(f"   {label}: {v[:400]}")
     print(f"{same} of {len(keys)} fields agree across {len(runs)} runs")
 
 

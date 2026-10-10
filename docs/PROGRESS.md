@@ -221,3 +221,37 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - ay sonu türü yalnız bu ayın sonu için;
   - ikinci kesik mesaja soruyu tekrarlamak yerine "could you say it again?";
   - genel kodda Brief B'ye özgü "today" ifadesi kaldırıldı.
+
+## Aşama 15 — İkinci inceleme, brif okumasının oynaklığı, üç okumalı uzlaşma
+- 3 tekrar ölçüm (e0a1897, A+B, × 3): 10/13.
+  - PUB-05 0/3: A+B birleşmesinin bilinen not çatışması; finalde her brif ayrı derleniyor.
+  - PUB-12 0/3: sayaç doğru, model STOP'tan sonra tabanı teklif etti (Aşama 14'teki bulgu). STOP satırı 9b2c9e0'da geldi, bu ölçümde yoktu.
+  - PUB-13 1/3 düştü: bir çağrıda tarih kaydı.
+- İkinci inceleme, düzeltmeler (9f84753):
+  - "Go on." veya "say it again" gibi ödeme sormayan bir asistan mesajından sonraki ret, önceki teklife yazılıyor;
+  - müşterinin kendi verdiği tarih veya tutar (k==0 iken karşı teklif) asistanın yaptığı bir teklif gibi sayılmıyor, ilk reddi 1. deneme;
+  - "no product refused" gibi uzun "yok" değerleri ret sayılmıyor.
+- Yeni fixture tests/fixtures/variants-c.json (936f995): iki varyant daha.
+  - PUB-13 benzeri: iki ürün 30 Ekim'de, ardından kredinin son tarihi ve tüm teklifleri reddediliyor;
+  - PUB-12 benzeri: her teklifte "neden?" diye soruluyor, sonunda hepsi reddediliyor.
+- 9f84753'ün ilk ölçümü pratik sunucusundaki bir ağ zaman aşımıyla düştü (`--suite` yolundaki vendor test koşucusu). Final yolu bu koşucuyu kullanmıyor; ölçüm yeniden başlatıldı.
+- Brif okumasının oynaklığı. Aynı ham fixture'ı (genx, geny) üç kez okuttum:
+  - genx: 50 alanın 39'u aynı. Karar alanı olarak `outcomes.no_reason` bir okumada 7 kod, ikisinde 11 kod;
+  - geny: 48 alanın 43'ü aynı. Karar alanı olarak `calendar.closed_day_rule` iki okumada "none", birinde "ask_again";
+  - geri kalan farklar ifade farkı (band adları, soru metinleri, açılış cümlesi).
+  - Sonuç: tek okuma, gizli brifte bir karar alanını yanlış okuyabilir; spec çıkarma build'in tek rastgele adımı.
+- Düzeltme, üç okumalı uzlaşma (`generate_consensus`):
+  - brif aynı anda üç kez okunuyor;
+  - her okuma kontrolden geçiyor, en iyi kontrol sonucuna sahip okumalar aday;
+  - adaylar arasından, yapılandırılmış alanlarda diğer bütün okumalarla en çok eşleşen okuma seçiliyor. Daha çok sözleşme hatası olan bir okuma kazanamıyor ama oy veriyor;
+  - ifade alanları (açılış cümlesi, soru metinleri, band adları, ürün adları) yalnız derleyicinin onlardan aldığı kısımla oy veriyor: değişkenler, alan adları, adım sayısı. Sırası anlam taşımayan listeler (çağrı değişkenleri, sonuç kodları, tatiller, bandlar) sırasız karşılaştırılıyor;
+  - hiçbir okuma bitmemişse okumalar, generate()'in kendi bütçe sınırına kadar bekleniyor. İlk iyi okumadan sonra geç kalanlara bir kez 180 sn veriliyor;
+  - üçü de düşerse build hata veriyor, biri düşerse kalanlarla devam ediyor;
+  - trace'e `spec_vote` satırı yazılıyor (kaç okuma, uyum, seçilen, farklı alanlar);
+  - okumalar `runs/<run_id>/read-<k>/spec.json` altında, `scripts/spec_diff.py` ile karşılaştırılabiliyor.
+  - Canlı deneme (yalnız spec, genx): 51 sn, 2. okuma seçildi.
+- Uzlaşma kodunun incelemesi (7 ajan, 3 doğrulanmış bulgu):
+  - hiçbir okuma bitmeden bütçe sınırına (available − 420 sn) gelinirse bütün okumalar iptal ediliyordu; eski tek okuma bu durumda bir aday döndürüyordu. Kısa `--seconds` değerlerinde her build düşüyordu;
+  - ifade alanları oy veriyordu. 2'ye 1 ayrılan bir soru metni, düşmüş bir çağrı değişkeniyle aynı ağırlıktaydı;
+  - sıralı karşılaştırma yüzünden yalnız sırası değişen bir liste uyuşmazlık sayılıyordu; gerçek okumalar üzerinde yapılan simülasyonda hatalı okuma %7 ile %33 arasında kazanıyordu.
+  - Düzeltme: üçü de düzeltildi. Ek olarak sır kontrolü yalnız "Secret detected" hatasına bakıyor, `BUILDER_READS` geçersizse 3 kullanılıyor (1 ile 5 arasına sınırlı), iptal edilen görevler güvenle işleniyor, seçim adımı hata verirse ilk uygun okuma kullanılıyor. Hepsinin testleri var.

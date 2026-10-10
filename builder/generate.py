@@ -226,8 +226,8 @@ async def ask_model(prompt, trace, model, cwd, purpose, budget, timeout=600):
     return result
 
 
-async def generate(inputs, kit, budget, trace, model, cwd, previous=None, feedback=None):
-    purpose = "revise bank spec from failure evidence" if previous else "extract bank spec and source coverage"
+async def generate(inputs, kit, budget, trace, model, cwd, previous=None, feedback=None, label=""):
+    purpose = ("revise bank spec from failure evidence" if previous else "extract bank spec and source coverage") + label
     prompt = make_prompt(inputs, kit, previous, feedback)
     name = "repair-response.txt" if previous else "generation-response.txt"
     for attempt in range(2):
@@ -240,21 +240,21 @@ async def generate(inputs, kit, budget, trace, model, cwd, previous=None, feedba
             break
         except (ValueError, TimeoutError, RuntimeError) as exc:
             # Secret leaks are never retried; a malformed or timed-out answer gets one fresh attempt.
-            if attempt == 1 or "Secret" in str(exc) or budget.available() < 400:
+            if attempt == 1 or is_secret_error(exc) or budget.available() < 400:
                 raise
             trace.emit("model_output_rejected", error_type=type(exc).__name__, detail=str(exc)[:300])
     issues = _checked(data, inputs)
     if issues:
-        trace.emit("spec_invalid", issues=issues)
+        trace.emit("spec_invalid", issues=issues, read=label.strip(" ()"))
         fix = make_prompt(inputs, kit, data, {"spec_contract_errors": issues})
         try:
             if budget.available() < 300:
                 raise TimeoutError("too little time left for a spec fix call")
-            text = await ask_model(fix, trace, model, cwd, "fix spec contract errors", budget, timeout=min(600, budget.available() - 180))
+            text = await ask_model(fix, trace, model, cwd, "fix spec contract errors" + label, budget, timeout=min(600, budget.available() - 180))
             (Path(cwd)/("fixed-" + name)).write_text(text)
             fixed = parse_response(text)
         except (ValueError, TimeoutError, RuntimeError) as exc:
-            if "Secret" in str(exc):
+            if is_secret_error(exc):
                 raise
             trace.emit("spec_fix_failed", error_type=type(exc).__name__, detail=str(exc)[:300])
             fixed = data
@@ -264,13 +264,18 @@ async def generate(inputs, kit, budget, trace, model, cwd, previous=None, feedba
         if _rank(remaining) <= _rank(issues):
             data, issues = fixed, remaining
         if issues:
-            trace.emit("spec_still_invalid", issues=issues, action="compiling best spec")
+            trace.emit("spec_still_invalid", issues=issues, action="compiling best spec", read=label.strip(" ()"))
     data["spec"] = normalize_spec(data["spec"], resolve_refs(inputs["api"]))
     data["workflow"] = compile_workflow(data["spec"], inputs["api"], inputs["briefs"])
     return data
 
 
 COMPILE_FAILED = "the compiler could not build a workflow from this spec"
+
+
+def is_secret_error(exc):
+    """The error ask_model raises when a secret is in the model's input or output; such a build always stops."""
+    return isinstance(exc, ValueError) and str(exc).startswith("Secret detected")
 
 
 def _checked(data, inputs):
@@ -288,3 +293,129 @@ def _checked(data, inputs):
 
 def _rank(issues):
     return (any(i.startswith(COMPILE_FAILED) for i in issues), len(issues))
+
+
+# Free-text spec fields: worded differently on every read, so they carry no vote.
+TEXT_FIELDS = ("policy", "tool_descriptions", "tool_field_hints")
+
+
+def flat_spec(value, prefix=""):
+    """The spec as {dotted.path: value}; lists of objects are indexed, other lists compared whole."""
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            out.update(flat_spec(v, f"{prefix}.{k}" if prefix else str(k)))
+        return out
+    if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+        out = {}
+        for i, v in enumerate(value):
+            out.update(flat_spec(v, f"{prefix}[{i}]"))
+        return out
+    return {prefix: json.dumps(value, sort_keys=True, ensure_ascii=False)}
+
+
+# Wording inside the structured part: it votes only through what the compiler takes from it.
+WORDING = re.compile(r"^(opening_line|identity\.questions\[\d+\]\.(ask|answer_format)|account\.bands\[\d+\]\.(name|attempt_plan)"
+                     r"|account\.spoken_name_by_type\..+|calendar\.holidays(\[\d+\]\.\w+)?)$")
+
+
+def vote_fields(spec):
+    """The structured fields reads should agree on, order-free where the order carries no meaning."""
+    spec = spec if isinstance(spec, dict) else {}
+    acc = spec.get("account") if isinstance(spec.get("account"), dict) else {}
+    cal = spec.get("calendar") if isinstance(spec.get("calendar"), dict) else {}
+    bands = [b for b in acc.get("bands") or [] if isinstance(b, dict)]
+    key = lambda b: tuple(v if isinstance(v, (int, float)) else 0 for v in (b.get("min"), b.get("max")))
+    ordered = dict(spec, account=dict(acc, bands=sorted(bands, key=key)))
+    out = {k: v for k, v in flat_spec(ordered).items() if not k.startswith(TEXT_FIELDS) and not WORDING.match(k)}
+    as_set = lambda xs: json.dumps(sorted({str(x) for x in xs}), ensure_ascii=False)
+    out["call_variables"] = as_set(spec.get("call_variables") or [])
+    outcomes = spec.get("outcomes") if isinstance(spec.get("outcomes"), dict) else {}
+    out["outcomes.no_reason"] = as_set(outcomes.get("no_reason") or [])
+    out["calendar.holiday_dates"] = as_set(h.get("date") if isinstance(h, dict) else h for h in cal.get("holidays") or [])
+    out["opening_line.variables"] = as_set(re.findall(r"\{\{\s*(\w+)\s*\}\}", str(spec.get("opening_line") or "")))
+    for kind, name in (acc.get("spoken_name_by_type") or {}).items():
+        out[f"account.spoken_name_by_type.{kind}.fields"] = as_set(re.findall(r"<(\w+)>", str(name)))
+    for i, band in enumerate(sorted(bands, key=key)):
+        out[f"account.bands[{i}].attempt_plan.steps"] = str(len(band.get("attempt_plan") or []))
+    return out
+
+
+def choose_read(specs, eligible=None):
+    """Index of the eligible read that agrees with all the other reads on the most structured fields (ties: the
+    earliest), with the scores of the eligible reads and the fields where at least two reads differ."""
+    flats = [vote_fields(s) for s in specs]
+    eligible = list(range(len(specs))) if eligible is None else list(eligible)
+    scores = [sum(1 for j, g in enumerate(flats) if j != i for k, v in flats[i].items() if g.get(k) == v) for i in eligible]
+    best = eligible[max(range(len(eligible)), key=lambda n: (scores[n], -n))]
+    keys = set().union(*flats) if flats else set()
+    split = sorted(k for k in keys if len({f.get(k) for f in flats}) > 1)
+    return best, scores, split
+
+
+async def generate_consensus(inputs, kit, budget, trace, model, run_dir, reads=3, grace=180):
+    """Reads the briefs several times in parallel and keeps the read the others agree with most.
+
+    The model call that reads the briefs is the one random step of a build: one read in a few drops a call
+    variable, an outcome code or a calendar rule that the others keep. Reads that fail or come too late are
+    left out; with one read left this is a plain generate().
+    """
+    if reads <= 1:
+        return await generate(inputs, kit, budget, trace, model, run_dir)
+    dirs = [Path(run_dir)/f"read-{i + 1}" for i in range(reads)]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+    tasks = [asyncio.create_task(generate(inputs, kit, budget, trace, model, d, label=f" (read {i + 1} of {reads})"))
+             for i, d in enumerate(dirs)]
+    ok = lambda t: t.done() and not t.cancelled() and t.exception() is None
+    # deadline: the budget.remaining() at which the grace period ends.
+    pending, deadline, why = set(tasks), None, {}
+    try:
+        while pending:
+            # Until a read is good, generate() itself keeps to the budget. After that, the others get one grace
+            # period, counted from the first good read and never past the time needed to publish.
+            if deadline is None:
+                limit = max(1, budget.available())
+            else:
+                limit = max(1, min(budget.remaining() - deadline, budget.available() - 420))
+            done, pending = await asyncio.wait(pending, timeout=limit, return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                break
+            if deadline is None and any(ok(t) for t in done):
+                deadline = budget.remaining() - grace
+                first = next(tasks.index(t) for t in done if ok(t)) + 1
+                why = {t: f"cancelled {grace} s after read {first} was ready" for t in tasks}
+    finally:
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    results, errors = [], []
+    for i, t in enumerate(tasks):
+        if t.cancelled():
+            errors.append(f"read {i + 1}: {why.get(t, 'cancelled at the budget limit')}")
+        elif t.exception() is not None:
+            if is_secret_error(t.exception()):
+                raise t.exception()
+            errors.append(f"read {i + 1}: {type(t.exception()).__name__}: {str(t.exception())[:200]}")
+        else:
+            results.append((i, t.result()))
+    if not results:
+        raise RuntimeError("No read of the briefs succeeded: " + "; ".join(errors))
+    # A read the compiler cannot build, or with more contract errors, never wins over a cleaner one.
+    ranks = {i: _rank(_checked(data, inputs)) for i, data in results}
+    best_rank = min(ranks.values())
+    eligible = [n for n, (i, _) in enumerate(results) if ranks[i] == best_rank]
+    for i, data in results:
+        (dirs[i]/"spec.json").write_text(json.dumps(data["spec"], indent=1, ensure_ascii=False))
+    try:
+        # Every read that came back votes, one with more contract errors too; only the cleanest reads can win.
+        pick, scores, split = choose_read([data["spec"] for _, data in results], eligible)
+    except Exception as exc:
+        trace.emit("spec_vote_failed", error_type=type(exc).__name__, detail=str(exc)[:300])
+        pick, scores, split = eligible[0], [], []
+    trace.emit("spec_vote", reads=reads, succeeded=[i + 1 for i, _ in results], failed=errors,
+               eligible=[results[n][0] + 1 for n in eligible],
+               agreement=dict(zip([str(results[n][0] + 1) for n in eligible], scores)),
+               chosen=results[pick][0] + 1, fields_that_differ=split[:60])
+    return results[pick][1]
