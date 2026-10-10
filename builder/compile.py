@@ -13,7 +13,7 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 # Variables that are set before or during a call; a body field with one of these names would be baked.
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
-            "negotiation_done", "wrap_up_facts"}
+            "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -272,8 +272,10 @@ def compile_workflow(spec, api, briefs):
     ]))
     # Once no product has a proposal left, the persuasion plans are out of sight: seen live, the model kept offering floors.
     wrap_up_task = "\n\n".join(filter(None, [
-        "PHASE: the payment proposals are finished. For a product marked DONE propose no amount and no date. Finish the call:"
-        " settle what the customer offered, apply the policy for the products without a promise, then close.",
+        "PHASE: the payment proposals are finished. For a product marked DONE propose no amount and no date. Finish the call in"
+        " this order: read back what the customer offered and ask them to confirm it as the policy says; after a clear yes call"
+        " create_promise for that product; call add_note for each product without a promise, with the reason the policy gives;"
+        " say what the policy requires after a recorded promise; then say the closing words and call close_call.",
         "NAMED DAY CHECK:\n{{named_day_facts}}",
         "DATE FACTS:\n{{date_facts}}",
         # Last, so the next step is the most recent text the model reads.
@@ -360,9 +362,11 @@ def compile_workflow(spec, api, briefs):
         "negotiate": negotiate_node,
         **({"check_date": code_node("check_date", "negotiate", [] if not COUNT_CHECK else [{
             "target_node": "wrap_up", "description": "no product has a proposal left",
-            "condition": {"logic": "and", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}])}
+            "condition": {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}])}
            if DATE_CHECK else {}),
-        **({"wrap_up": dict(negotiate_node, name="wrap_up", task_message=wrap_up_task)}
+        **({"wrap_up": dict(negotiate_node, name="wrap_up", task_message=wrap_up_task,
+                            # The entry line is the reply on the turn of the last refusal: it is given the one thing to say.
+                            on_enter={"type": "llm", "prompt": "Reply to the customer now, doing exactly the NEXT STEP at the end of your task: {{wrap_up_step}}"})}
            if DATE_CHECK and COUNT_CHECK else {}),
         "hang_up": {
             "name": "hang_up", "node_type": "end_call", "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True,

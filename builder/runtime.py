@@ -110,6 +110,10 @@ def validate_workflow(workflow, api):
     api = resolve_refs(api)
     allowed_urls = {s["url"].rstrip("/") + "/" + p.lstrip("/"): v for s in api.get("servers", []) for p, v in api.get("paths", {}).items()}
     for location, item in walk(workflow):
+        # workflow-format.md: the top-level condition group always uses "or"; a mismatch fails silently.
+        condition = item.get("condition")
+        if isinstance(condition, dict) and "conditions" in condition and str(condition.get("logic")).lower() != "or":
+            issues.append(f"{location}.condition: top-level logic must be or (nest and inside it)")
         for key in ("target_node", "passthrough_default_transition", "max_turn_transition"):
             if item.get(key) and item[key] not in targets:
                 issues.append(f"{location}.{key}: missing target {item[key]}")

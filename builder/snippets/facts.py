@@ -404,7 +404,8 @@ NO_VALUE = set(["", "none", "nothing", "n/a", "na", "null", "nil", "no refusal",
 NOT_REFUSAL = set(["accept", "accepted", "agree", "agreed", "applicable", "confirm", "confirmed"])
 BARE_NO = set(["no", "nope", "nah", "not", "never", "won", "t", "can", "cannot", "don", "do", "doesn", "refuse", "refused", "refuse",
                "refusal", "flat", "flatly", "decline", "declined", "pay", "paying", "it", "that", "this", "i", "will", "want", "to",
-               "way", "now", "sorry", "afford", "the", "a", "offer", "proposal", "customer", "say", "said", "just"])
+               "way", "now", "sorry", "afford", "the", "a", "offer", "proposal", "customer", "say", "said", "just",
+               "those", "these", "them", "either", "both", "of"])
 
 
 def _no_value(raw):
@@ -429,7 +430,7 @@ def _ids(raw, infos):
     return [] if _no_value(raw) else _refused_ids(raw, infos)
 
 
-def _count_refusals(plans):
+def _count_refusals(plans, day_named=False, named_date=None):
     """Counts, per product, the refused proposals the assistant actually made, then clears the extracted words.
 
     The first ask covers every product once: a product refused in answer to it gets count 1, never more. After that a
@@ -459,12 +460,31 @@ def _count_refusals(plans):
     raw = str(vars.get("refused_products") or "").strip()
     asked = _ids(str(vars.get("proposed_products") or ""), infos)
     changed = []
+    try:
+        days_of = json.loads(str(vars.get("own_offer_days") or "{}"))
+        days_of = days_of if isinstance(days_of, dict) else dict()
+    except Exception:
+        days_of = dict()
+    if named_date:
+        for pid in _ids(str(vars.get("dated_products") or ""), infos):
+            days_of[pid] = named_date
     if not _no_value(raw):
         ids = _refused_ids(raw, infos)
         if not ids and _bare_no(raw):
             open_ids = [pl[0] for pl in plans if 0 < k_of(pl[0]) <= _total(pl)]
             ids = asked or (open_ids if len(open_ids) == 1 else [])
         first_ask = first_open and (not asked or set(asked) == set(all_ids))
+        dated_now = _ids(str(vars.get("dated_products") or ""), infos)
+        if first_ask and dated_now and set(ids) - set(dated_now):
+            ids = [pid for pid in ids if pid not in dated_now]
+        if first_ask and day_named and ids and set(ids) < set(all_ids):
+            # "I can pay the card tomorrow, not the loans": the day is for the products not refused, even when the
+            # dated_products extraction missed it. Seen live: the closing phase depends on knowing this.
+            for pid in all_ids:
+                if pid not in ids and k_of(pid) == 0 and pid not in own:
+                    own.append(pid)
+                    if named_date:
+                        days_of.setdefault(pid, named_date)
         if not first_ask and not asked and len(ids) > 1:
             # Not known what was proposed: a group refusal counts only for the product being worked on, in bank order.
             working = [pid for pid in all_ids if pid in ids and 0 < k_of(pid) <= _total(plans[all_ids.index(pid)])]
@@ -486,6 +506,7 @@ def _count_refusals(plans):
     vars["proposed_products"] = "none"
     vars["dated_products"] = "none"
     vars["own_offer_products"] = json.dumps(own)
+    vars["own_offer_days"] = json.dumps(days_of, sort_keys=True)
     vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
     return counts, changed
 
@@ -495,7 +516,7 @@ def _total(plan):
     return len(steps) if steps else (allowed if allowed is not None else 99)
 
 
-def _plan_state(plans, counts, changed=(), own=()):
+def _plan_state(plans, counts, changed=(), own=(), details=None):
     lines = []
     now = []
     pending, unasked, stopped, offered = [], [], [], []
@@ -528,7 +549,7 @@ def _plan_state(plans, counts, changed=(), own=()):
     if now and pending:
         now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + pending[0] + ".")
     elif stopped and not pending and not unasked:
-        now.append(_closing_step(offered))
+        now.append(_closing_step(offered, details))
     return ("\n".join(now) + ("\n" if now else "")
             + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
             " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
@@ -537,16 +558,22 @@ def _plan_state(plans, counts, changed=(), own=()):
             + "\n".join(lines))
 
 
-def _closing_step(offered):
-    """One concrete next message for the turn after the last proposal; seen live, a list of don'ts was filled with an offer."""
+def _closing_step(offered, details=None):
+    """One concrete next message for the turn after the last proposal; seen live, a list of don'ts was filled with an offer.
+    `details` names, per offered product, the day the customer gave and the amount owed, so the read-back has its figures."""
     if offered:
-        return ("NEXT STEP: no product has a proposal left. Your next message reads back what the customer agreed for " + " and ".join(offered)
-                + " (the product, the amount and the day they gave) and asks them to confirm. It proposes no amount and no date.")
+        parts = []
+        for name in offered:
+            d = (details or dict()).get(name)
+            parts.append(name + ((": " + d) if d else ": the day and the amount the customer gave"))
+        return ("NEXT STEP: no product has a proposal left. Your next message is the read-back for " + "; ".join(parts)
+                + ". Ask them to confirm it as the policy says. The read-back is the only amount and the only day in the message;"
+                " nothing is proposed for any other product.")
     return ("NEXT STEP: no product has a proposal left. Your next message proposes no amount and no date: apply the policy for the"
             " products without a promise, then close the call.")
 
 
-def _wrap_up(plans, counts, own, owed=None):
+def _wrap_up(plans, counts, own, owed=None, details=None):
     """(True, product lines) when no product has a proposal left: each is at STOP or has a day or amount the customer gave,
     and at least one is at STOP. The workflow then leaves the persuasion plans behind for a closing node."""
     lines, stopped, offered = [], 0, []
@@ -561,12 +588,13 @@ def _wrap_up(plans, counts, own, owed=None):
             lines.append(pid + " " + label + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date"
                          " for it. Apply the policy for a product without a promise.")
         else:
-            return False, ""
-    if not stopped:
-        return False, ""
-    return True, "\n".join(lines) + ("\nWhen every product has its promise, or what the policy prescribes for a product without one,"
-                                     " close the call as the CLOSING TABLE says.\n" + _closing_step(offered)
-                                     + (" If the customer already confirmed, do the next of these steps instead." if offered else ""))
+            return False, "", ""
+    if not stopped or not offered:
+        # Every product refused: the negotiate node's closing step has passed live; the closing node adds nothing there.
+        return False, "", ""
+    step = _closing_step(offered, details) + (" If the customer already confirmed, do the next of these steps instead." if offered else "")
+    return True, ("\n".join(lines) + "\nWhen every product has its promise, or what the policy prescribes for a product without one,"
+                  " close the call as the CLOSING TABLE says.\n" + step), step
 
 
 def run():
@@ -619,6 +647,7 @@ def run():
     rows = []
     done_rows = []
     owed = dict()
+    owed_amount = dict()
     product_deadlines = []
     plans = []
     for index, p in enumerate(products):
@@ -633,8 +662,8 @@ def run():
         floor_field, floor = _floor_of(p, _for_type(floors, kind), amount_field)
         dl = band.get("_deadline") if band else None
         product_deadlines.append(dl)
-        owed[str(p.get(id_field))] = (" (amount owed now " + _money(p.get(amount_field)) + "; deadline " + (_label(dl) if dl else "see policy")
-                                      + ("; floor " + _money(floor) + ", only to check an amount the customer gave" if floor is not None else "") + ")")
+        owed[str(p.get(id_field))] = " (amount owed now " + _money(p.get(amount_field)) + "; deadline " + (_label(dl) if dl else "see policy") + ")"
+        owed_amount[str(p.get(id_field))] = _money(p.get(amount_field))
         text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(_for_type(names, kind), p)
         # A product at STOP is shown without its floor, plan and raw record: seen live, the model offered the floor it saw.
         done_rows.append(text + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date for it."
@@ -679,28 +708,69 @@ def run():
             deadlines.append((str(p.get(id_field)), product_deadlines[index]))
     if not deadlines:
         deadlines = [("band " + str(b.get("name")), b.get("_deadline")) for b in bands if b.get("_deadline")]
+    vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
+    day_words = str(vars.get("named_day_words") or "").strip()
+    day_named = bool(day_words) and day_words != "none"
+    try:
+        resolved = _resolve_day(day_words, today) if day_named else []
+    except Exception:
+        resolved = []
+    named_date = resolved[0].isoformat() if len(resolved) == 1 else None
+    count = len(rows)
+    counts, changed = _count_refusals(plans, day_named, named_date)
+    own = json.loads(vars.get("own_offer_products") or "[]")
+    # A finished product's deadline is no date to work with any more. Seen live: the band line and the calendar still named
+    # it after its last proposal, and the model offered that product its floor on that date.
+    finished = set(pl[0] for pl in plans if len(plans) > 1 and int(counts.get(pl[0]) or 0) > _total(pl))
+    open_deadlines = [(name, dl) for name, dl in deadlines if name not in finished]
+    if finished:
+        lines = [l for l in lines if not l.startswith("Deadlines computed from today")]
     days = []
     d = today
     while d <= far + datetime.timedelta(days=7):
-        days.append(_day_line(d, today, workdays, holidays, deadlines))
+        days.append(_day_line(d, today, workdays, holidays, open_deadlines))
         d = d + datetime.timedelta(days=1)
     lines.append("Calendar, one line per day from today. When the customer names a day, find its line and apply the policy to what the line says:\n" + "\n".join(days))
     vars["date_facts"] = "\n".join(lines)
-    vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
-    _named_day(today, workdays, holidays, deadlines)
-    count = len(rows)
-    counts, changed = _count_refusals(plans)
-    own = json.loads(vars.get("own_offer_products") or "[]")
+    _named_day(today, workdays, holidays, open_deadlines)
+    # Per product the customer gave a day or an amount for: what the read-back says. Only a day the policy accepts as it
+    # is (not past, a business day, on or before the product's deadline) is read back; any other day is settled first.
+    details = dict()
+    settled = []
+    try:
+        days_of = json.loads(str(vars.get("own_offer_days") or "{}"))
+        days_of = days_of if isinstance(days_of, dict) else dict()
+    except Exception:
+        days_of = dict()
+    for pid, label, _s, _a, _t, _f in plans:
+        iso = str(days_of.get(pid) or "")
+        try:
+            day = datetime.date.fromisoformat(iso[:10]) if iso else None
+        except Exception:
+            day = None
+        text = "the amount owed now, " + owed_amount.get(pid, "the amount owed") + ", unless the customer named another amount"
+        accepted = True
+        if day:
+            line = _day_line(day, today, workdays, holidays, open_deadlines)
+            dl = dict(open_deadlines).get(pid)
+            accepted = day >= today and _is_business(day, workdays, holidays) and (dl is None or day <= dl)
+            if accepted:
+                text = "the day the customer gave, " + _label(day) + " (calendar: " + line + "), and " + text
+            else:
+                text = ("the day the customer gave, " + _label(day) + ", is not accepted as it is (calendar: " + line
+                        + "); the read-back uses the day the date rules give for it, and " + text)
+        if pid in own and accepted:
+            settled.append(pid)
+        details[pid + " " + label] = text
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts, changed, own) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
-    done, wrap = _wrap_up(plans, counts, own, owed) if len(plans) > 1 else (False, "")
+    vars["plan_state"] = _plan_state(plans, counts, changed, own, details) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    done, wrap, step = _wrap_up(plans, counts, settled, owed, details) if len(plans) > 1 else (False, "", "")
     vars["negotiation_done"] = "yes" if done else "no"
     vars["wrap_up_facts"] = wrap or "Not in the closing phase."
+    vars["wrap_up_step"] = step or "Not in the closing phase."
     for index, pl in enumerate(plans):
-        if len(plans) > 1 and int(counts.get(pl[0]) or 0) > _total(pl):
+        if pl[0] in finished:
             rows[index] = done_rows[index]
-    # A finished product's deadline is no date to work with any more.
-    finished = set(pl[0] for pl in plans if len(plans) > 1 and int(counts.get(pl[0]) or 0) > _total(pl))
     known = [(name, dl) for name, dl in deadlines if not name.startswith("band ") and name not in finished]
     if len(known) > 1 and len(set(dl for _, dl in known)) > 1:
         # One date named for several products is the multi-product case that needs the most date arithmetic.
