@@ -188,7 +188,11 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
                 "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"))}
     if tool == "close_call":
         silent = [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
+        # The model often sends its last add_note or create_promise in the same turn as close_call, and the
+        # platform runs them concurrently: a close that lands first makes them fail. The goodbye is already said.
         tool_obj["pre_process_code"] = (
+            "try:\n    import datetime\n    end = datetime.datetime.now() + datetime.timedelta(seconds=1.5)\n"
+            "    while datetime.datetime.now() < end:\n        pass\nexcept Exception:\n    pass\n"
             "try:\n    b = config.get('body')\n    if isinstance(b, dict):\n"
             "        r = str(b.get('reason') or '').strip()\n"
             f"        if b.get('outcome') in {json.dumps(silent)} or not r or r.startswith(chr(123)):\n"

@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from builder.compile import compile_workflow
 from builder.generate import validate_spec
@@ -45,8 +46,11 @@ def test_close_call_drops_reason_for_reasonless_outcomes():
     tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "close_call")
     for outcome, reason, kept in (("promise", "x", False), ("no_promise", "refused", True), ("no_promise", "{{close_call_reason}}", False)):
         config = {"body": {"outcome": outcome, "reason": reason}}
+        start = time.monotonic()
         exec(tool["pre_process_code"], {"config": config})
         assert ("reason" in config["body"]) == kept
+        # close_call waits so that tool calls sent in the same turn reach the bank first.
+        assert time.monotonic() - start >= 1.4
 
 
 def test_facts_compute_deadline_from_spec_and_skip_holiday():
