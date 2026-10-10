@@ -35,3 +35,12 @@ def test_persona_map_is_shared_between_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, 'Popen', Done)
     run_evaluation('agent', 'A', kit, tmp_path/'test-a', Budget(1800), Trace(tmp_path/'t.jsonl'), {}, personas=shared)
     assert json.loads(shared.read_text()) == {"old":"p0","new":"p1"}
+
+
+def test_ab_suite_requires_both_public_briefs(tmp_path):
+    (tmp_path/'briefs').mkdir()
+    (tmp_path/'briefs/brief-a.md').write_text('a')
+    (tmp_path/'briefs/brief-b.md').write_text('b')
+    assert_public_suite([{"text":"a"},{"text":"b"}], "AB", tmp_path) is None
+    with pytest.raises(ValueError):
+        assert_public_suite([{"text":"a"}], "AB", tmp_path)

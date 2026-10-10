@@ -10,9 +10,10 @@ from .runtime import digest
 
 
 def assert_public_suite(documents, brief, kit):
-    names = ["brief-a.md"] + (["brief-b.md"] if brief == "B" else [])
+    # Suite AB runs every public case against the A+B agent: Brief B keeps all Brief A rules.
+    names = ["brief-a.md"] + (["brief-b.md"] if brief in ("B", "AB") else [])
     expected = [(Path(kit)/"briefs"/name).read_text() for name in names]
-    if brief not in ("A", "B") or [d["text"] for d in documents] != expected:
+    if brief not in ("A", "B", "AB") or [d["text"] for d in documents] != expected:
         raise ValueError("Public suite does not match supplied brief contents")
 
 
@@ -29,11 +30,12 @@ def run_evaluation(agent_id, brief, kit, run_dir, budget, trace, env, only=None,
     personas = Path(personas) if personas else None
     if personas and personas.exists(): shutil.copy(personas, work/".personas.json")
     output = Path(run_dir)/"evaluation.json"
-    command = [sys.executable,str(work/"tools/run_cases.py"),agent_id,"--brief",brief,"--reps",str(reps),"--out",str(output)]
+    command = [sys.executable,str(work/"tools/run_cases.py"),agent_id,"--reps",str(reps),"--out",str(output)]
+    if brief != "AB": command += ["--brief",brief]
     if only: command += ["--only",only]
     if style: command += ["--style",style]
     cases = json.loads((work/"public-test-set.json").read_text())
-    ids = [c["id"] for c in cases if c["brief"]==brief and (not only or c["id"] in only.split(','))]
+    ids = [c["id"] for c in cases if (brief=="AB" or c["brief"]==brief) and (not only or c["id"] in only.split(','))]
     if not ids: raise ValueError("No matching public cases")
     # Conservative planning estimate, not a guaranteed server upper bound.
     estimate = 420 * ((len(ids)+4)//5) * reps + 120

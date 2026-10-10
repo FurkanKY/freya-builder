@@ -29,7 +29,7 @@ def parse_args(argv=None):
     p.add_argument("--brief",action="append")
     p.add_argument("--tool-api")
     p.add_argument("--slot")
-    p.add_argument("--suite",choices=["A","B"])
+    p.add_argument("--suite",choices=["A","B","AB"])
     p.add_argument("--only")
     p.add_argument("--reps",type=int,default=1)
     p.add_argument("--style",choices=["pieces","corrects","talkative","asks_back","in_words"])

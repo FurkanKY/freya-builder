@@ -56,7 +56,7 @@ def test_facts_compute_deadline_from_spec_and_skip_holiday():
     # 5 business days after Wed 21 Oct, skipping the weekend and the 26 Oct holiday: 22, 23, 27, 28, 29.
     assert "deadline 2026-10-29" in out["account_facts"]
     assert "credit card ending 1234" in out["account_facts"]
-    assert "2026-10-26 Mon: HOLIDAY" in out["date_facts"]
+    assert "2026-10-26 Monday: HOLIDAY (bank holiday), NOT a business day; next business day 2026-10-27 Tuesday; on or before the deadline of p1" in out["date_facts"]
     assert out["facts_state"] == "ready"
 
 

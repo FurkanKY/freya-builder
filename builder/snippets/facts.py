@@ -185,19 +185,6 @@ def run():
         band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + "): deadline " + (_label(dl) if dl else "see policy") + ", persuasion attempts " + str(band.get("persuasion_attempts")) + ".")
     if band_lines:
         lines.append("Deadlines computed from today: " + " ".join(band_lines))
-    days = []
-    d = today
-    while d <= far + datetime.timedelta(days=7):
-        tag = "business day"
-        if d.isoformat() in holidays:
-            tag = "HOLIDAY (" + holidays[d.isoformat()] + "), not a business day"
-        elif d.weekday() not in workdays:
-            tag = "weekend, not a business day"
-        days.append(d.isoformat() + " " + WEEKDAYS[d.weekday()][:3] + ": " + tag)
-        d = d + datetime.timedelta(days=1)
-    lines.append("Calendar from today: " + " | ".join(days) + ".")
-    vars["date_facts"] = "\n".join(lines)
-
     products = _parse_products(spec)
     floors = acc.get("floor_field_by_type") or dict()
     names = acc.get("spoken_name_by_type") or dict()
@@ -206,6 +193,7 @@ def run():
     id_field = acc.get("id_field") or "product_id"
     type_field = acc.get("type_field") or "type"
     rows = []
+    product_deadlines = []
     for index, p in enumerate(products):
         kind = str(p.get(type_field) or "")
         seg_value = _num(p.get(seg))
@@ -218,6 +206,7 @@ def run():
         floor_field = floors.get(kind)
         floor = p.get(floor_field) if floor_field else None
         dl = band.get("_deadline") if band else None
+        product_deadlines.append(dl)
         text = str(index + 1) + ". product_id " + str(p.get(id_field)) + ": " + _spoken(names.get(kind), p)
         text += "; past-due amount " + _money(p.get(amount_field))
         text += "; " + seg + " " + str(p.get(seg))
@@ -227,6 +216,33 @@ def run():
             text += "; floor (" + str(floor_field) + ") " + _money(floor)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)
+    deadlines = []
+    for index, p in enumerate(products):
+        if index < len(product_deadlines) and product_deadlines[index]:
+            deadlines.append((str(p.get(id_field)), product_deadlines[index]))
+    if not deadlines:
+        deadlines = [("band " + str(b.get("name")), b.get("_deadline")) for b in bands if b.get("_deadline")]
+    days = []
+    d = today
+    while d <= far + datetime.timedelta(days=7):
+        text = d.isoformat() + " " + WEEKDAYS[d.weekday()]
+        if _is_business(d, workdays, holidays):
+            text += ": business day"
+        else:
+            text += ": HOLIDAY (" + holidays[d.isoformat()] + "), NOT a business day" if d.isoformat() in holidays else ": weekend, NOT a business day"
+            nxt = _next_business(d, workdays, holidays)
+            if nxt:
+                text += "; next business day " + nxt.isoformat() + " " + WEEKDAYS[nxt.weekday()]
+        inside = [name for name, dl in deadlines if d <= dl]
+        after = [name for name, dl in deadlines if d > dl]
+        if inside:
+            text += "; on or before the deadline of " + ", ".join(inside)
+        if after:
+            text += "; AFTER the deadline of " + ", ".join(after)
+        days.append(text)
+        d = d + datetime.timedelta(days=1)
+    lines.append("Calendar, one line per day from today. When the customer names a day, find its line and apply the policy to what the line says:\n" + "\n".join(days))
+    vars["date_facts"] = "\n".join(lines)
     if rows:
         vars["account_facts"] = "Late products, in the order the bank returned them:\n" + "\n".join(rows)
         vars["product_count"] = str(len(rows))
