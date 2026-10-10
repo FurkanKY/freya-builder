@@ -1,10 +1,15 @@
 """Deadline-aware adaptation of the official v3 Freya client (same export format)."""
 import json
+import time
 import urllib.error
 import urllib.request
 import urllib.parse
 from pathlib import Path
 from .runtime import write_json
+
+class TransientError(RuntimeError):
+    pass
+
 
 AGENT_LLM = {"provider":"experimental-5", "model":"experimental-5"}
 
@@ -16,6 +21,15 @@ class Client:
         self.transport=transport
 
     def api(self,method,path,body=None,finalizing=False,**params):
+        # Transient failures (5xx, dropped connections, timeouts) get two more tries; 4xx never retries.
+        for attempt in range(3):
+            try:
+                return self._api(method,path,body,finalizing,params)
+            except TransientError:
+                if attempt==2 or self.budget.available()<10: raise
+                time.sleep(2*(attempt+1))
+
+    def _api(self,method,path,body,finalizing,params):
         timeout=min(30,self.budget.require(1,finalizing=finalizing))
         if self.transport:
             return self.transport(method,path,body,params,timeout)
@@ -25,7 +39,11 @@ class Client:
             with urllib.request.urlopen(request,timeout=timeout) as response:
                 result=json.load(response)
         except urllib.error.HTTPError as exc:
-            raise RuntimeError(f"Freya {method} {path} -> {exc.code}: {exc.read().decode(errors='replace')[:800]}") from None
+            detail=f"Freya {method} {path} -> {exc.code}: {exc.read().decode(errors='replace')[:800]}"
+            if exc.code>=500 or exc.code==429: raise TransientError(detail) from None
+            raise RuntimeError(detail) from None
+        except (urllib.error.URLError,TimeoutError,ConnectionError) as exc:
+            raise TransientError(f"Freya {method} {path} unreachable: {type(exc).__name__}") from None
         if isinstance(result,dict) and result.get("success") is False:
             raise RuntimeError("Freya API rejected request: "+str(result.get("data",{}).get("message","unknown error"))[:500])
         return result.get("data",{}).get("result",result) if isinstance(result,dict) else result

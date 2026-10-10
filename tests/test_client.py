@@ -34,3 +34,22 @@ def test_export_respects_remaining_total_deadline(tmp_path):
     c=Client("unused",budget,workspace_id="ws",state_path=tmp_path/'state.json',transport=transport)
     c.export("w")
     assert 0 < observed[0] <= 5
+
+
+def test_transient_errors_are_retried_but_client_errors_are_not(tmp_path, monkeypatch):
+    from builder import freya_client
+    monkeypatch.setattr(freya_client.time, "sleep", lambda s: None)
+    calls = []
+    def flaky(method, path, body, params, timeout):
+        calls.append(path)
+        if len(calls) < 3: raise freya_client.TransientError("503")
+        return {"ok": True}
+    c = Client("unused", Budget(1800), workspace_id="ws", state_path=tmp_path/'state.json', transport=flaky)
+    assert c.api("GET", "/x") == {"ok": True} and len(calls) == 3
+    def rejected(method, path, body, params, timeout):
+        calls.append(path); raise RuntimeError("400")
+    c = Client("unused", Budget(1800), workspace_id="ws", state_path=tmp_path/'state.json', transport=rejected)
+    calls.clear()
+    try: c.api("GET", "/y")
+    except RuntimeError: pass
+    assert len(calls) == 1
