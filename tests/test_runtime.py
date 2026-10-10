@@ -19,6 +19,8 @@ def test_trace_redacts_values_even_in_nested_errors(tmp_path):
     content = trace.path.read_text()
     assert "private-key-value" not in content
     assert json.loads(content)["detail"]["nested"] == ["Bearer [REDACTED]"]
+    text = (tmp_path / "trace.txt").read_text()
+    assert "private-key-value" not in text and " error: detail=" in text
 
 
 def test_load_inputs_uses_supplied_api_and_all_briefs(tmp_path):

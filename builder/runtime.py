@@ -49,9 +49,19 @@ class Trace:
         return text
 
     def emit(self, event, **data):
-        line = self.clean(json.dumps({"at": datetime.now(timezone.utc).isoformat(), "event": event, **data}, ensure_ascii=False, default=str))
+        at = datetime.now(timezone.utc).isoformat()
+        line = self.clean(json.dumps({"at": at, "event": event, **data}, ensure_ascii=False, default=str))
         with self.path.open("a") as handle:
             handle.write(line + "\n")
+        # A plain-text twin for human readers: one line per event, long values shortened.
+        parts = []
+        for key, value in data.items():
+            if key == "usage" and isinstance(value, dict):
+                value = {k: value.get(k) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")}
+            text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+            parts.append(f"{key}={text if len(text) <= 300 else text[:300] + '...'}")
+        with self.path.with_suffix(".txt").open("a") as handle:
+            handle.write(self.clean(f"{at} {event}: " + ", ".join(parts)) + "\n")
         print(line, flush=True)
 
 
