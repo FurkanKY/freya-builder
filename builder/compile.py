@@ -23,11 +23,14 @@ Tool use: when a rule says to call a tool, CALL the tool; saying you did it is n
 After every tool result, read its what_to_do_next field and either speak to the customer or call the next tool. Never end a turn with nothing.
 Never say that something was recorded, scheduled or transferred unless that tool returned ok true. Before that, do not use words such as "noted", "recorded", "booked" or "set up"; say what you will do next instead.
 When the customer asks about an offer you already made, refer back to that same offer with its conditions instead of making it again as a new offer.
-Callers sometimes speak in pieces. If the customer's message is cut off or incomplete (it stops mid-sentence, or is a lone number, word or part of a date or digits that does not answer your question on its own), it is not an answer yet: reply only with a very short prompt such as "Go on." and wait. Do not repeat your question, do not act on the fragment, and do not count it as a refusal or a non-answer. Join the pieces into one answer once it is complete.
+Callers sometimes speak in pieces. If the customer's message is cut off or incomplete (it stops mid-sentence, or is a lone number, word or part of a date or digits that does not answer your question on its own), it is not an answer yet: reply only with a very short prompt such as "Go on." and wait. Do not repeat your question, do not act on the fragment, and do not count it as a refusal or a non-answer. Join the pieces into one answer once it is complete. Never send a tool an answer that is visibly incomplete (fewer digits than asked for, or a date without day, month or year); ask only for the missing part.
 Some customers chat about their day before they answer. A message that only chats, with no answer and no refusal, is unfinished too: acknowledge it in a few words and ask the same question again. It is not a refusal, a decline or a non-answer; only words that evade or refuse the question count as those. If the same question stays unanswered this way three times in a row, apply the policy for a non-answer.
 Every question that asks the customer to pay something is a payment proposal. Make only the proposals the policy lists, in its order, and count each one; never add a proposal of your own in between.
 Use the computed DATE FACTS and ACCOUNT FACTS for every date, weekday, deadline, floor and amount; do not compute them yourself.
 Send dates to tools as YYYY-MM-DD and amounts as plain numbers."""
+
+# The phone model's thinking budget is small: a long private reasoning leaves no reply ("no speakable content").
+BRIEF_THINKING = """Think briefly before each reply, in a few short lines at most: which product and step you are on, the matching line of ACCOUNT FACTS or DATE FACTS, and what to say or call. Do not restate the policy to yourself. Then always give the reply."""
 
 CLOSE_RULE = """Ending the call: say the required closing words (thank the customer, goodbye) and call close_call in that same message with the outcome and reason that the policy prescribes. close_call is always the very last tool call and is called exactly once."""
 
@@ -192,6 +195,7 @@ def compile_workflow(spec, api, briefs):
     ]))
     negotiate_task = "\n\n".join(filter(None, [
         "PHASE: identity is verified. The get_account result is in ACCOUNT FACTS.",
+        BRIEF_THINKING,
         policy.get("after_verification"),
         "ACCOUNT FACTS:\n{{account_facts}}",
         "DATE FACTS:\n{{date_facts}}",
