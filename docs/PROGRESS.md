@@ -410,3 +410,11 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Bu "evet" artık yine kabul edilmiş 1. deneme (8d8e8d4'teki gibi) ve geri okumayı model yapıyor.
   - İtiraz ya da "ödendi" notundan sonra söylenen gün, ürünü müşterinin kendi teklifi yapıyordu. Sebebi itiraz, ödeme ya da dolandırıcılık olan not artık ürünü kapatıyor. Zorluk notundan sonraki gün hâlâ sayılıyor.
   - Yeniden oynatma 98a4925 ile aynı sonucu veriyor. 71 test geçiyor.
+
+## Aşama 17 — Pazar 09:20–: final brief'lerinin olası biçimleri için genel destek
+- Fuzz (9bd1edf, seed 2, 4000 deneme): sorun yok.
+- 149a9aa: taban tutarı `max(<a>, <b>)` ya da `min(<a>, <b>)` olabiliyor ("50 EUR ya da %10, hangisi büyükse"). Borçtan büyük çıkan bir taban (küçük bir borçta sabit asgari) borcun kendisi sayılıyor.
+  - Yeni son tarih türleri: gelecek ayın sonu, gelecek ayın son iş günü, bu haftanın ve gelecek haftanın son iş günü.
+  - Okuyucunun serbest yazdığı biçimler ("end of the following month", "end_of_week") bu türlere eşleniyor. Sayı içeren ya da "after"/"within" geçen biçimler eskisi gibi bilinmiyor sayılıyor ("see policy").
+- 77aeddc: araç yolu `/get_account/{customer_id}` biçimindeyse son adlı parçasından bulunuyor. Yol parametresi `{{ad}}` olarak, çağrı değişkeni adındaki sorgu parametresi URL'ye ekleniyor. Yerel doğrulama bunları geri eşliyor.
+- Public derlemelerde iş akışı bayt bayt aynı. 79 aramanın yeniden oynatılmasında fark yok. 72 test geçiyor.
