@@ -954,6 +954,31 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
             + "\n".join(lines))
 
 
+PITCH_HEAD = "NEXT STEP: your next message makes exactly this proposal and no other: "
+
+
+def _proposal_line(step_text, plans, changed):
+    """The next proposal as a fixed line, when the NEXT STEP names one step of a product refused on this turn and that step is
+    only an amount and a day the code filled in (no condition in words). Empty otherwise."""
+    lines = [l for l in str(step_text or "").split("\n") if l.strip()]
+    if len(lines) != 1 or not lines[0].startswith(PITCH_HEAD):
+        return ""
+    rest = lines[0][len(PITCH_HEAD):]
+    for pid, label, _steps, _allowed, _tokens_of, _floor in plans:
+        lead = pid + " " + label + ": attempt "
+        if pid not in changed or not rest.startswith(lead):
+            continue
+        m = re.match(r"^\d+: (?:propose |offer |ask for )?(\d+(?:\.\d+)?) (by|on) (\d{4}-\d{2}-\d{2}) \(\w+, \d{1,2} \w+ \d{4}\)\."
+                     r"(?: The (?:day the customer gave|proposal the customer accepted) for .*)?$", rest[len(lead):])
+        if not m:
+            return ""
+        day = datetime.date.fromisoformat(m.group(3))
+        name = re.sub(r"^(?:your|the)\s+", "", str(label).strip(), flags=re.I)
+        return ("I understand. For your " + name + ", can you pay " + m.group(1) + " " + m.group(2) + " " + WEEKDAYS[day.weekday()] + ", "
+                + str(day.day) + " " + day.strftime("%B") + "?")
+    return ""
+
+
 def _closing_step(offered, details=None):
     """One concrete next message for the turn after the last proposal; seen live, a list of don'ts was filled with an offer.
     `details` names, per offered product, the day the customer gave and the amount owed, so the read-back has its figures."""
@@ -1287,6 +1312,20 @@ def run():
                          "No step is named for this message: follow the PROPOSAL COUNT, the NAMED DAY CHECK and the policy.")
     done, wrap, step = _wrap_up(plans, counts, settled, owed, details, recorded, agreed) if len(plans) > 1 else (False, "", "")
     prev_done = str(vars.get("negotiation_done") or "")
+    # Seen in a chat run (PUB-11-v2): the NEXT STEP named "attempt 2: propose 213 by 2026-10-23" and the model said 640, the
+    # amount of its own previous proposal. On a plain refusal, a step that is only an amount and a day is said as a fixed line,
+    # as the read-back is: no pattern to copy. English only; anything else in the customer's answer leaves it to the model.
+    pitch = ""
+    if (len(plans) > 1 and not done and changed and not day_named and not dated_now and not accepted_now and not question
+            and not _amount_named(vars.get("named_amount_words")) and str(vars.get("plain_refusal") or "").strip().lower() == "yes"
+            and str(spec.get("language") or "English").strip().lower().startswith(("en", "eng"))):
+        pitch = _proposal_line(vars["next_step"], plans, changed)
+    if pitch:
+        vars["next_step"] = ("NEXT STEP: this proposal has just been said, word for word: \"" + pitch + "\" Wait for the customer's answer;"
+                             " if they ask something, answer it and make the same proposal again.")
+    vars["plain_refusal"] = ""
+    vars["proposal_mode"] = "say" if pitch else "llm"
+    vars["proposal_say"] = pitch or "Thank you."
     if _amount_named(vars.get("named_amount_words")):
         vars["amount_named"] = "yes"
     vars["named_amount_words"] = "none"

@@ -19,7 +19,7 @@ RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_fact
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
             "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open", "first_ask_closed",
-            "accepted_products", "agreed_products", "next_step"}
+            "accepted_products", "agreed_products", "next_step", "plain_refusal", "proposal_mode", "proposal_say"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -500,7 +500,15 @@ def compile_workflow(spec, api, briefs):
                            " for example 'why do you need that?', 'why today?', 'why all of them?' or 'which account is this about?',"
                            " with no answer in it: it refuses nothing, names no day or amount and accepts nothing. 'no' for everything"
                            " else, including a request (another plan, lower instalments, a discount, a person, a callback), a question"
-                           " about support, a mention of hardship, a dispute or a payment already made, and a message that is cut off."}] if COUNT_CHECK else [])}
+                           " about support, a mention of hardship, a dispute or a payment already made, and a message that is cut off."}, {
+            # On a plain refusal the next proposal of the plan is a fixed line; anything else in the answer is left to the model.
+            "name": "plain_refusal", "type": "string", "enum_values": ["yes", "no"], "min_confidence": 0.6,
+            "description": "'yes' only when the customer's LAST message just declines the payment the assistant proposed or asked for"
+                           " ('no', 'I can't', 'not that either', 'no, whatever you offer'), with nothing else in it. 'no' when it also"
+                           " or instead asks a question, gives a reason such as illness, a death, job loss or other hardship, disputes the"
+                           " debt, says it is already paid, says the amount is too much, asks for something (another plan, lower"
+                           " instalments, a discount, a person, a callback), names a day or an amount, accepts, declines something that is"
+                           " not a payment (an offer of support, a transfer, a callback), or is cut off."}] if COUNT_CHECK else [])}
            if DATE_CHECK else {}),
         # Multi-rule date, amount and per-product attempt decisions happen here.
         "reasoning_override": NEGOTIATE_REASONING,
@@ -558,13 +566,19 @@ def compile_workflow(spec, api, briefs):
                 {"variable": "negotiation_done", "operator": "equals", "operand": "yes"},
                 {"variable": "readback_said", "operator": "not_equals", "operand": "{}"}]}]}}, {
             "target_node": "wrap_up", "description": "no product has a proposal left",
-            "condition": {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}])}
+            "condition": {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}, {
+            # Seen in a chat run: the model said its own previous amount instead of the step's. A plain refusal's next
+            # proposal is a fixed line, said on every entry.
+            "target_node": "say_proposal", "description": "the next proposal is a fixed line",
+            "condition": {"logic": "or", "conditions": [{"variable": "proposal_mode", "operator": "equals", "operand": "say"}]}}])}
            if DATE_CHECK else {}),
         **({"wrap_up": dict(negotiate_node, name="wrap_up", task_message=wrap_up_task,
                             # The entry line is the reply on the turn of the last refusal: it is given the one thing to say.
                             on_enter={"type": "llm", "prompt": "Reply to the customer now, doing exactly the NEXT STEP at the end of your task: {{wrap_up_step}}"}),
             "wrap_up_readback": dict(negotiate_node, name="wrap_up_readback", task_message=wrap_up_task,
-                                     on_enter={"type": "tts", "text": "{{wrap_up_say}}"})}
+                                     on_enter={"type": "tts", "text": "{{wrap_up_say}}"}),
+            "say_proposal": dict(negotiate_node, name="say_proposal", on_enter={"type": "tts", "text": "{{proposal_say}}"},
+                                 on_enter_first_entry_only=False)}
            if DATE_CHECK and COUNT_CHECK else {}),
         "hang_up": {
             "name": "hang_up", "node_type": "end_call", "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True,

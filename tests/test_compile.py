@@ -296,7 +296,7 @@ def test_refusals_are_counted_per_product_in_code():
     assert validate_workflow(wf, API) == []
     negotiate = wf["nodes"]["negotiate"]
     assert [f["name"] for f in negotiate["extraction_schema"]] == ["named_day_words", "refused_products", "proposed_products", "dated_products",
-                                                                  "accepted_products", "named_amount_words", "asked_back"]
+                                                                  "accepted_products", "named_amount_words", "asked_back", "plain_refusal"]
     assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == [
         "named_day_words", "refused_products", "named_amount_words", "accepted_products", "asked_back"]
     # A question back routes to the counter only while the first ask is open, and only with several products.
@@ -349,6 +349,52 @@ def test_refusals_are_counted_per_product_in_code():
     out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products[:1]), "refused_products": "credit card"})
     assert out["plan_state"].startswith("One product:")
     assert {"variable": "product_count", "operator": "not_equals", "operand": "1"} in negotiate["transitions"][1]["condition"]["conditions"][1]["conditions"]
+
+
+def test_a_plain_refusal_gets_the_next_proposal_as_a_fixed_line():
+    # Seen in a chat run: the NEXT STEP named "attempt 2: propose 213 by 2026-10-23" and the model said 640, its own previous
+    # amount. A step that is only an amount and a day is said word for word after a plain refusal.
+    spec = json.loads(json.dumps(SPEC))
+    step1 = "attempt 1: propose <amount> (full past-due, or <floor> if the customer already said it is too much) by <last_business_day_this_week>"
+    spec["account"]["bands"] = [
+        {"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""},
+         "persuasion_attempts": 1, "attempt_plan": [step1]},
+        {"name": "late", "min": 11, "max": 45, "deadline": {"type": "business_days_after_today", "count": 7, "date": ""},
+         "persuasion_attempts": 2, "attempt_plan": [step1, "attempt 2: propose <floor> on <deadline>"]}]
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
+                {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
+                {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refusal_counts": json.dumps({"p1": 1, "p2": 1, "p3": 1})}
+    out = run_facts(wf, dict(base, refused_products="credit card", proposed_products="credit card", plain_refusal="yes"))
+    assert out["proposal_mode"] == "say" and out["plain_refusal"] == ""
+    assert out["proposal_say"] == "I understand. For your credit card ending 9015, can you pay 153 on Friday, 23 October?"
+    assert out["next_step"].startswith('NEXT STEP: this proposal has just been said, word for word: "I understand. For your credit card')
+    # Anything else in the answer, or a step with a condition in words, stays with the model.
+    for extra in [dict(plain_refusal="no"), dict(plain_refusal=""), dict(plain_refusal="yes", named_day_words="next Monday"),
+                  dict(plain_refusal="yes", named_amount_words="100")]:
+        out = run_facts(wf, dict(base, refused_products="credit card", proposed_products="credit card", **extra))
+        assert out["proposal_mode"] == "llm" and out["proposal_say"] == "Thank you.", extra
+        assert "has just been said" not in out["next_step"], extra
+    out = run_facts(wf, dict(base, refusal_counts="{}", refused_products="all", proposed_products="all", plain_refusal="yes"))
+    assert out["proposal_mode"] == "llm" and "attempt 1: propose 510 (full past-due" in out["next_step"]
+    # The last proposal refused: its STOP line and the next product's step stay with the model.
+    out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 2, "p2": 1, "p3": 1}), refused_products="credit card",
+                             proposed_products="credit card", plain_refusal="yes"))
+    assert out["proposal_mode"] == "llm" and out["next_step"].startswith("The customer has just refused the last proposal allowed for p1")
+    # One product keeps the model's own counting.
+    out = run_facts(wf, dict(base, account_products=json.dumps(products[:1]), refusal_counts=json.dumps({"p1": 1}),
+                             refused_products="credit card", proposed_products="credit card", plain_refusal="yes"))
+    assert out["proposal_mode"] == "llm"
+    node = wf["nodes"]["say_proposal"]
+    assert node["on_enter"] == {"type": "tts", "text": "{{proposal_say}}"} and node["on_enter_first_entry_only"] is False
+    assert node["tools"] == wf["nodes"]["negotiate"]["tools"] and node["transitions"] == wf["nodes"]["negotiate"]["transitions"]
+    assert node["extraction_schema"] == wf["nodes"]["negotiate"]["extraction_schema"]
+    assert "plain_refusal" in json.dumps(node["extraction_schema"])
+    route = wf["nodes"]["check_date"]["transitions"]
+    assert route[-2] == {"target_node": "say_proposal", "description": "the next proposal is a fixed line", "condition": {
+        "logic": "or", "conditions": [{"variable": "proposal_mode", "operator": "equals", "operand": "say"}]}}
+    assert validate_workflow(wf, API) == []
 
 
 def test_only_proposals_the_assistant_made_are_counted():
@@ -736,7 +782,7 @@ def test_stop_names_the_next_step():
     assert "PERSUASION PLAN" not in wf["nodes"]["wrap_up"]["task_message"] and "{{account_facts}}" not in wf["nodes"]["wrap_up"]["task_message"]
     assert wf["nodes"]["wrap_up"]["task_message"].rstrip().endswith("{{wrap_up_facts}}")
     route = wf["nodes"]["check_date"]["transitions"]
-    assert [r["target_node"] for r in route] == ["wrap_up_readback", "wrap_up_readback", "wrap_up", "negotiate"]
+    assert [r["target_node"] for r in route] == ["wrap_up_readback", "wrap_up_readback", "wrap_up", "say_proposal", "negotiate"]
     assert route[-1] == {"target_node": "negotiate", "description": "always", "condition": {"operator": "always"}}
     assert route[0]["condition"] == {"logic": "or", "conditions": [{"logic": "and", "conditions": [
         {"variable": "negotiation_done", "operator": "equals", "operand": "yes"}, {"variable": "wrap_up_mode", "operator": "equals", "operand": "say"}]}]}
