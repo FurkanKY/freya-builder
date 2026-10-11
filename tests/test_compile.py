@@ -1144,3 +1144,34 @@ def test_the_fixed_read_back_line_is_only_for_an_english_agent():
             out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan", named_day_words="none", dated_products="none"))
         out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan", named_day_words="none", dated_products="none"))
         assert out["negotiation_done"] == "yes" and out["wrap_up_mode"] == mode, (language, out["wrap_up_mode"])
+
+
+def test_a_day_for_every_product_is_read_back_next():
+    spec, products = _three_products_spec()
+    wf = compile_workflow(spec, API, BRIEFS)
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refused_products": "none", "proposed_products": "all",
+            "dated_products": "all"}
+    # Seen in a chat run: "I can pay all three this Friday" named no step, and the model asked about the amounts first.
+    out = run_facts(wf, dict(base, named_day_words="this Friday"))
+    step = out["plan_state"].split("\n")[0]
+    assert step.startswith("NEXT STEP: no product has a proposal left. Your next message is the read-back for p1")
+    assert "16 October 2026" in step and "510" in step and "1320" in step and "140" in step
+    # A day the policy does not accept as it is, or an amount of the customer's own, is settled first.
+    for extra in ({"named_day_words": "Saturday"}, {"named_day_words": "this Friday", "named_amount_words": "100"}):
+        out = run_facts(wf, dict(base, **extra))
+        assert "read-back" not in out["plan_state"].split("\n")[0], extra
+    # The confirmation that follows repeats the day it confirms; that is no new day and no second read-back.
+    out = run_facts(wf, dict(base, named_day_words="this Friday"))
+    out = run_facts(wf, dict(out, named_day_words="Friday, 16 October", dated_products="all", refused_products="none", proposed_products="none"))
+    assert "read-back" not in out["plan_state"].split("\n")[0]
+
+
+def test_the_next_step_is_the_last_thing_the_negotiating_model_reads():
+    spec, products = _three_products_spec()
+    wf = compile_workflow(spec, API, BRIEFS)
+    assert wf["nodes"]["negotiate"]["task_message"].rstrip().endswith("{{next_step}}")
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refused_products": "all", "proposed_products": "all"})
+    assert out["next_step"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p1 credit card")
+    assert out["next_step"] in out["plan_state"]
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products[:1])})
+    assert out["next_step"] == out["plan_state"]

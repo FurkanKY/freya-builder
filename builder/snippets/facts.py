@@ -768,7 +768,7 @@ def _total(plan):
 
 
 def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, day_named=False, dated=(), question=False,
-                first_closed=False, agreed=None, accepted_now=()):
+                first_closed=False, agreed=None, accepted_now=(), fresh=()):
     recorded = recorded or dict()
     agreed = agreed or dict()
     accepted_names = []
@@ -888,6 +888,14 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
             # Seen in a chat run: after a product's STOP, a product the first answer left open had no step named.
             now.append(propose + first_of[first_open[0]] + "." + waits + " If the customer disputed " + first_open[0] + " or said it is"
                        " already paid, apply the policy for that instead and propose nothing for it.")
+    ready = [name for name in offered if name in accepted_names or (str((details or dict()).get(name) or "").startswith("the day the customer gave, ")
+                                                                    and "is not accepted as it is" not in str((details or dict()).get(name)))]
+    if (fresh and offered and ready == offered and not pending and not unasked and not stopped and not _amount_named(vars.get("named_amount_words"))
+            and vars.get("amount_named") != "yes" and not any(x.startswith("NEXT STEP") for x in now)):
+        # Seen in a chat run: "I can pay all three this Friday" left no proposal to make and no step was named; the model
+        # asked whether the full amounts were meant, then read back: two confirmations. The read-back is the next message.
+        # Only on the turn a day is new: a "yes, I confirm" that repeats the day it confirms is no new day.
+        now.append(_closing_step(offered, details))
     if accepted_now and queue and not named and not any(x.startswith("NEXT STEP") for x in now):
         # The customer accepted a proposal: the next product's proposal follows, one product at a time in bank order.
         named = queue[0]
@@ -1164,6 +1172,7 @@ def run():
     day_named = bool(resolved) or (given and bool(_tokens(day_words) & VAGUE_DAY))
     named_date = resolved[0].isoformat() if len(resolved) == 1 else None
     count = len(rows)
+    own_before, days_before = str(vars.get("own_offer_products") or "[]"), str(vars.get("own_offer_days") or "{}")
     counts, changed, dated_now, question, accepted_now = _count_refusals(plans, day_named, named_date, today.isoformat(), recorded)
     first_closed = str(vars.get("first_ask_closed") or "") == "yes"
     # "I can't pay today" answers the first ask: today is not a day of the customer's own that is checked first.
@@ -1219,8 +1228,18 @@ def run():
         if ((pid in own or pid in agreed) and accepted) or "create_promise" in (recorded.get(pid) or []):
             settled.append(pid)
         details[pid + " " + label] = text
+    try:
+        own_before, days_before = json.loads(own_before), json.loads(days_before)
+    except Exception:
+        own_before, days_before = [], dict()
+    days_before = days_before if isinstance(days_before, dict) else dict()
+    fresh = [pid for pid in dated_now if pid not in (own_before or []) or str(days_of.get(pid)) != str(days_before.get(pid))]
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded, day_offered, dated_now, question, first_closed, agreed, accepted_now) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded, day_offered, dated_now, question, first_closed, agreed,
+                                     accepted_now, fresh) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    steps = [l for l in vars["plan_state"].split("\n") if l.startswith("NEXT STEP") or l.startswith("The customer has just refused")]
+    vars["next_step"] = ("\n".join(steps) if steps else vars["plan_state"] if len(plans) <= 1 else
+                         "No step is named for this message: follow the PROPOSAL COUNT, the NAMED DAY CHECK and the policy.")
     done, wrap, step = _wrap_up(plans, counts, settled, owed, details, recorded, agreed) if len(plans) > 1 else (False, "", "")
     prev_done = str(vars.get("negotiation_done") or "")
     if _amount_named(vars.get("named_amount_words")):

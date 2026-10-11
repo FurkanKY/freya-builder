@@ -16,7 +16,7 @@ RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_fact
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
             "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open", "first_ask_closed",
-            "accepted_products", "agreed_products"}
+            "accepted_products", "agreed_products", "next_step"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -38,6 +38,7 @@ When the customer asks back why you need an answer, give the reason in one short
 When the customer asks about an offer you already made, answer only the question in one short sentence that names it as the offer already made (for example "That is the amount I mentioned.") and stop there: do not say again that you can offer it and do not ask for it again.
 Callers sometimes speak in pieces. If the customer's message is cut off or incomplete (it stops mid-sentence, or is a lone number, word or part of a date or digits that does not answer your question on its own), it is not an answer yet: reply only with a very short prompt such as "Go on." and wait. Do not repeat your question, do not act on the fragment, and do not count it as a refusal or a non-answer. Join the pieces into one answer once it is complete. An answer that already has every part the question needs (a date with day, month and year; the full number of digits) is complete: use it at once, even if it is short, ends abruptly or is followed by a few cut-off words such as "This is"; never reply "Go on." to it. Numbers said in words are complete as said: "nineteen ninety" is 1990 and "twenty one" is 21. Your reply to a fragment is never empty; say at least "Go on." Say "Go on." at most once in a row: if the next message is cut off again, say "Sorry, I missed that, could you say it again?" and nothing else; it does not count as asking your question again. Never send a tool an answer that is visibly incomplete (fewer digits than asked for, or a date without day, month or year); ask only for the missing part.
 Some customers chat about their day before they answer. A message that only chats, with no answer and no refusal, is unfinished too: acknowledge it in a few words and ask the same question again. It is not a refusal, a decline or a non-answer; only words that evade or refuse the question count as those. If the same question stays unanswered this way three times in a row, apply the policy for a non-answer.
+A hardship the customer mentions (illness, a death in the family, job loss, or another the policy names) brings in the policy's rule for it, which comes before the PERSUASION PLAN for the rest of the call: from then on make only the proposals that rule allows, also when the customer then asks for more time or a smaller amount, and follow that rule to its end.
 Every question that asks the customer to pay something is a payment proposal. Make only the proposals the policy lists, in its order, and count each one; never add a proposal of your own in between. A customer's answer that already refuses or accepts a product, also as part of a group such as "the loans" or "none of them", counts as that product's answer to the first ask: continue with that product's next PERSUASION PLAN step and never ask it again for today.
 Products can get different numbers of proposals. Give each product exactly the steps of its own PERSUASION PLAN, never the steps of another product; at its STOP the product is done: offer it nothing more, not its floor, a smaller amount or another date. When a PROPOSAL COUNT is given, it says which proposal comes next for each product; follow it.
 When the customer names one date for several products and it is inside some products' deadlines but after another's, the date stays for the products it fits: say so in the same sentence in which you propose the earlier date for the other product, and read back each product with its own date.
@@ -327,6 +328,9 @@ def compile_workflow(spec, api, briefs):
         "PROPOSAL COUNT:\n{{plan_state}}" if COUNT_CHECK else "",
         "NAMED DAY CHECK:\n{{named_day_facts}}" if DATE_CHECK else "",
         "DATE FACTS:\n{{date_facts}}",
+        # Last, so the next step is the most recent text the model reads: seen in chat runs, a NEXT STEP in the middle of the
+        # prompt was skipped for a read-back or one more offer.
+        "NEXT STEP (from the PROPOSAL COUNT; the policy's own exceptions, such as hardship, come first):\n{{next_step}}" if COUNT_CHECK else "",
     ]))
     # Once no product has a proposal left, the persuasion plans are out of sight: seen live, the model kept offering floors.
     wrap_up_task = "\n\n".join(filter(None, [
