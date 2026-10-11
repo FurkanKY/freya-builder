@@ -453,3 +453,8 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Sıradaki adım (`next_step`) müzakere komutunun en sonunda tekrarlanıyor; kapanış düğümünde bu yöntem canlıda işe yaramıştı.
   - Zorluk (hastalık, ölüm, iş kaybı) söylendiğinde politikanın kuralı aramanın geri kalanında ikna planından önce geliyor.
   - Eski 79 aramanın yeniden oynatılmasında fark yalnız PUB-11/PUB-13'te gün verilen turlarda. Fuzz: sorun yok. 87 test geçiyor.
+- Ölçüm (9c04f83, public-b v30, public-a v7): ilk koşularda B 3/4, varyantlar 3/3, A 8/8.
+  - PUB-12 r1: müzakere doğruydu. Sabit geri okumadan sonra gelen "evet, onaylıyorum" kapanış düğümünün ilk girişine düştü. İlk girişteki giriş mesajı araç çağıramıyor; create_promise metin olarak yazıldı (`_call:create_promise{...}`) ve söz kaydedilmedi. Eski dökümlerde aynı örüntü beş kez görüldü, hepsi aynı yoldan.
+- fdc3c25: sabit geri okumadan sonraki kapanış turları, daha önce girilmiş geri okuma düğümüne dönüyor; orada yanıt araçlı normal bir tur.
+- Taban formülünde bir alanın katı ("2 * instalment_amount", "min(2 * instalment_amount, past_due)") artık kodda hesaplanıyor. H2'nin araç kredisi tabanında görüldü; önceden taban boş kalıyor ve hesap telefondaki modele kalıyordu.
+- 11:20 civarında platform `chat/message` için 503/504 döndü (aynı anda 21 konuşma). H1/H2 konuşmaları durduruldu; public ölçümünden sonra daha az işçiyle yeniden koşulacak. chat_cases, hiç başlamamış bir aramayı artık yargıca göndermiyor.

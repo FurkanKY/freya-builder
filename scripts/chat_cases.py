@@ -151,6 +151,10 @@ def run_case(wid, case, style, outdir, tag):
             break
         if re.search(r"goodbye", msg, re.I) and call_id and call_ended(call_id):
             break
+    if call_id is None:
+        # The first message never reached the agent: nothing to score or judge (the judge would spend quota on no call).
+        return {"id": case["key"], "tag": tag, "pass": False, "infra": True, "failed": ["no call: " + note], "call_id": None,
+                "tools": [], "note": note or "no call"}
     try:
         freya.api("POST", "/api/v2/chat/end", {"callId": call_id})
     except Exception:

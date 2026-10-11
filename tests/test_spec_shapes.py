@@ -317,3 +317,18 @@ def test_product_fields_in_a_nested_object_and_amounts_given_as_text():
     out = _facts(spec, [product])
     assert "credit card ending 1234" in out and "2125.1" in out
     assert "floor (max(balance.minimum_payment, 5% of balance.past_due)) 106.26" in out
+
+
+def test_a_floor_that_is_a_multiple_of_a_field():
+    # A held-out brief: the car loan floor is "the lower of twice the instalment and the past-due amount".
+    spec = json.loads(json.dumps(SPEC))
+    for rule, floor in (("min(2 * instalment_amount, past_due)", "800"), ("instalment_amount x 2", "800"), ("1.5 * instalment_amount", "600")):
+        spec["account"]["floor_field_by_type"] = {"credit_card": rule}
+        assert validate_spec(spec, API) == [], rule
+        out = _facts(spec, [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "days_late": 4, "past_due": 1250, "instalment_amount": 400}])
+        assert "floor (" + rule + ") " + floor in out, (rule, out)
+    spec["account"]["floor_field_by_type"] = {"credit_card": "2 * nonsense"}
+    assert any("floor 2 * nonsense" in i for i in validate_spec(spec, API))
+    snippet = (ROOT/"builder/snippets/facts.py").read_text()
+    from builder.generate import TIMES
+    assert "TIMES = r\"" + TIMES + "\"" in snippet

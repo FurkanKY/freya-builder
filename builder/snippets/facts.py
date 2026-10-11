@@ -5,6 +5,8 @@ import re
 import datetime
 
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+# A floor that is a multiple of a product field: "2 * field", "2x field", "field x 2", "field \u00d7 2".
+TIMES = r"^(?:(\d+(?:\.\d+)?)\s*(?:\*|\u00d7|x(?=\s))\s*([A-Za-z_][\w.]*)|([A-Za-z_][\w.]*)\s*(?:\*|\u00d7|\sx)\s*(\d+(?:\.\d+)?))$"
 
 
 def _spec():
@@ -256,6 +258,13 @@ def _floor_of(product, rule, amount_field):
             return text, None
         label = text if m.group(2) else text + " of " + amount_field
         return label, _ceil_cents(base * float(m.group(1)) / 100.0)
+    # A multiple of a field ("2 * instalment_amount", "instalment_amount x 2"), rounded up to the cent like a percentage.
+    m = re.match(TIMES, text)
+    if m:
+        base = _num(product.get(m.group(2) or m.group(3)))
+        if base is None:
+            return text, None
+        return text, _ceil_cents(base * float(m.group(1) or m.group(4)))
     if text not in product and _num(text) is not None:
         return "fixed amount", _num(text)
     return text, product.get(text)
