@@ -957,9 +957,11 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
 PITCH_HEAD = "NEXT STEP: your next message makes exactly this proposal and no other: "
 
 
-def _proposal_line(step_text, plans, changed):
+def _proposal_line(step_text, plans, changed, recorded=None, refused_amount=None):
     """The next proposal as a fixed line, when the NEXT STEP names one step of a product refused on this turn and that step is
-    only an amount and a day the code filled in (no condition in words). Empty otherwise."""
+    only an amount and a day the code filled in (no condition in words). Empty otherwise. In a review: not for a product with a
+    note (hardship, dispute, paid), not when the label holds the product id, and not when the step repeats the amount just
+    refused (the floor offered after 'too much' and refused again): there the model has the policy and the history."""
     lines = [l for l in str(step_text or "").split("\n") if l.strip()]
     if len(lines) != 1 or not lines[0].startswith(PITCH_HEAD):
         return ""
@@ -968,13 +970,20 @@ def _proposal_line(step_text, plans, changed):
         lead = pid + " " + label + ": attempt "
         if pid not in changed or not rest.startswith(lead):
             continue
+        if (any(str(x).startswith(("add_note", "note", "create_promise")) for x in ((recorded or dict()).get(pid) or []))
+                or re.search(r"(^|\s)" + re.escape(pid) + r"(\s|$)", str(label))):
+            return ""
         m = re.match(r"^\d+: (?:propose |offer |ask for )?(\d+(?:\.\d+)?) (by|on) (\d{4}-\d{2}-\d{2}) \(\w+, \d{1,2} \w+ \d{4}\)\."
                      r"(?: The (?:day the customer gave|proposal the customer accepted) for .*)?$", rest[len(lead):])
         if not m:
             return ""
+        amount = float(m.group(1))
+        if refused_amount is not None and abs(refused_amount - amount) < 0.005:
+            return ""
         day = datetime.date.fromisoformat(m.group(3))
         name = re.sub(r"^(?:your|the)\s+", "", str(label).strip(), flags=re.I)
-        return ("I understand. For your " + name + ", can you pay " + m.group(1) + " " + m.group(2) + " " + WEEKDAYS[day.weekday()] + ", "
+        said = str(int(amount)) if amount == int(amount) else "%.2f" % amount
+        return ("I understand. For your " + name + ", can you pay " + said + " " + m.group(2) + " " + WEEKDAYS[day.weekday()] + ", "
                 + str(day.day) + " " + day.strftime("%B") + "?")
     return ""
 
@@ -1324,11 +1333,13 @@ def run():
     if (len(plans) > 1 and not done and changed and not day_named and not dated_now and not accepted_now and not question
             and not _amount_named(vars.get("named_amount_words")) and str(vars.get("plain_refusal") or "").strip().lower() == "yes"
             and str(spec.get("language") or "English").strip().lower().startswith(("en", "eng"))):
-        pitch = _proposal_line(vars["next_step"], plans, changed)
+        refused = re.findall(r"\d[\d,]*(?:\.\d+)?", str(vars.get("proposed_amount") or ""))
+        pitch = _proposal_line(vars["next_step"], plans, changed, recorded, _num(refused[0].replace(",", "")) if refused else None)
     if pitch:
         vars["next_step"] = ("NEXT STEP: this proposal has just been said, word for word: \"" + pitch + "\" Wait for the customer's answer;"
                              " if they ask something, answer it and make the same proposal again.")
     vars["plain_refusal"] = ""
+    vars["proposed_amount"] = "none"
     vars["proposal_mode"] = "say" if pitch else "llm"
     vars["proposal_say"] = pitch or "Thank you."
     if _amount_named(vars.get("named_amount_words")):

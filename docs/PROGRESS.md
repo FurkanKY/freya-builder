@@ -472,3 +472,13 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - 9c04f83'te (~93 KB) hiçbir aramada bu hata yok: o ölçümün sonuçları geçerli. 252eeed'deki küçük büyüme sınırı aştırdı.
 - 4817440: brif "bu ayın son iş günü bugün ya da daha önceyse bir sonraki ayınki" dediğinde (`deadline.roll_forward`), son tarih kodda bir sonraki aya (ya da haftaya) geçiyor.
 - 4772701: kod düğümü yorumsuz, docstring'siz ve tek boşluk girintiyle gönderiliyor; aynı programa ayrıştığı `ast` ile denetleniyor, değilse kaynak olduğu gibi gidiyor. Spec'ten yalnız kodun okuduğu alanlar gidiyor; politika metninden yalnız tırnak içindeki sorular kalıyor. 98,7 KB → 64,8 KB. Bir test kodu 72000 baytın altında tutuyor.
+- cbe9d24: DATE FACTS takvimi bugünden ~6 hafta sonra duruyor. Takvim, kod düğümü sınırına sayılan çağrı verisinin en büyük parçasıydı. Daha sonraki bir gün yine kodda denetleniyor.
+- b728e80: başarısız bir `verify_identity` isteği yanlış cevap sayılmıyor. Aynı cevapla bir kez daha gönderiliyor, müşteriye yeniden sorulmuyor. Başarısız bir hesap yüklemesi müşteriye öyle söyleniyor. `get_account` bir kez yeniden deneniyor.
+- 4569118: platform bir satıra 504 döndüğünde chat_cases satırı yeniden göndermiyor, cevabı arama kaydından alıyor. Yeniden gönderilen satır konuşmayı dallandırıyordu (`isBranch: true`). Çift notlar ve yarıda kalan aramalar buradan geliyordu; bunlar altyapı hatası, ajan hatası değil.
+- Ölçüm (public derlemeleri 4772701, public-b v32, public-a v9; platform 504'leriyle kesilen koşular sayılmadı): B 3/3 vaka, iki tekrarda da geçti. A 10/10 geçti. Varyantlar 4/5.
+  - PUB-11-v2 r1: kod adımı doğru verdi (kişisel kredi, 2. deneme: 213, 23 Ekim). Model ise 640 dedi; bu, kendi önceki teklifinin tutarıydı. STOP'tan sonra da 180 uydurdu.
+  - Public koşularında kod düğümü hatası yok.
+- b09a6b8: düz bir retten sonra, yalnız tutar ve günden oluşan bir sonraki teklif sabit bir cümle olarak söyleniyor: "I understand. For your personal loan, can you pay 213 by Friday, 23 October?".
+  - Yeni `plain_refusal` çıkarımı yalnız teklifi reddeden bir cevabı işaretliyor. `check_date` bu durumda `say_proposal` düğümüne gidiyor; düğüm negotiate'in kopyası, girişte tts.
+  - Model şunları kendisi ele alıyor: koşul içeren adımlar ("tam tutar, ya da müşteri çok dedi ise taban"), STOP, söylenen bir gün ya da tutar, soru, zorluk, tek ürünlü aramalar ve İngilizce dışındaki diller.
+- 267ef5e: haftanın son iş günü aranan müşteride, plan adımının "bugün o günse bir sonraki haftanın son iş günü" koşulu kodda çözülüyor: adım yalnız bir sonraki haftanın gününü söylüyor. Bu kural public A'nın 30. maddesi; önceden günü modelin görmesi gerekiyordu. Public vakalarının hepsi Çarşamba olduğu için Cuma'yı hiç ölçmemiştik.

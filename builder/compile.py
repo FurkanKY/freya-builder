@@ -19,7 +19,7 @@ RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_fact
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
             "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open", "first_ask_closed",
-            "accepted_products", "agreed_products", "next_step", "plain_refusal", "proposal_mode", "proposal_say"}
+            "accepted_products", "agreed_products", "next_step", "plain_refusal", "proposed_amount", "proposal_mode", "proposal_say"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -508,7 +508,12 @@ def compile_workflow(spec, api, briefs):
                            " or instead asks a question, gives a reason such as illness, a death, job loss or other hardship, disputes the"
                            " debt, says it is already paid, says the amount is too much, asks for something (another plan, lower"
                            " instalments, a discount, a person, a callback), names a day or an amount, accepts, declines something that is"
-                           " not a payment (an offer of support, a transfer, a callback), or is cut off."}] if COUNT_CHECK else [])}
+                           " not a payment (an offer of support, a transfer, a callback), says they do not want to talk or asks to end the"
+                           " call or to stop calling, or is cut off."}, {
+            # The fixed line never repeats the amount the customer has just refused (a floor offered after 'too much').
+            "name": "proposed_amount", "type": "string", "min_confidence": LOOSE,
+            "description": "The amount of money the assistant's LAST message proposed or asked the customer to pay, in digits as the"
+                           " assistant said it, for example '213' or '61.20'. 'none' when that message proposed no amount."}] if COUNT_CHECK else [])}
            if DATE_CHECK else {}),
         # Multi-rule date, amount and per-product attempt decisions happen here.
         "reasoning_override": NEGOTIATE_REASONING,

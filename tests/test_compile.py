@@ -296,14 +296,16 @@ def test_refusals_are_counted_per_product_in_code():
     assert validate_workflow(wf, API) == []
     negotiate = wf["nodes"]["negotiate"]
     assert [f["name"] for f in negotiate["extraction_schema"]] == ["named_day_words", "refused_products", "proposed_products", "dated_products",
-                                                                  "accepted_products", "named_amount_words", "asked_back", "plain_refusal"]
+                                                                  "accepted_products", "named_amount_words", "asked_back", "plain_refusal",
+                                                                  "proposed_amount"]
     assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == [
         "named_day_words", "refused_products", "named_amount_words", "accepted_products", "asked_back"]
     # A question back routes to the counter only while the first ask is open, and only with several products.
     assert negotiate["transitions"][1]["condition"]["conditions"][4] == {"logic": "and", "conditions": [
         {"variable": "asked_back", "operator": "equals", "operand": "yes"}, {"variable": "first_ask_open", "operator": "equals", "operand": "yes"},
         {"variable": "product_count", "operator": "not_equals", "operand": "1"}]}
-    assert negotiate["extraction_schema"][-1]["enum_values"] == ["yes", "no"]
+    asked = next(f for f in negotiate["extraction_schema"] if f["name"] == "asked_back")
+    assert asked["enum_values"] == ["yes", "no"]
     assert "{{plan_state}}" in negotiate["task_message"]
     products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
                 {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
@@ -382,6 +384,22 @@ def test_a_plain_refusal_gets_the_next_proposal_as_a_fixed_line():
     out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 2, "p2": 1, "p3": 1}), refused_products="credit card",
                              proposed_products="credit card", plain_refusal="yes"))
     assert out["proposal_mode"] == "llm" and out["next_step"].startswith("The customer has just refused the last proposal allowed for p1")
+    # In a review: the floor offered after "too much" and refused is not said again; a product with a note gets no line;
+    # an amount with cents keeps two decimals; a label that holds the product id is left to the model.
+    out = run_facts(wf, dict(base, refused_products="credit card", proposed_products="credit card", plain_refusal="yes", proposed_amount="153"))
+    assert out["proposal_mode"] == "llm" and out["proposed_amount"] == "none"
+    out = run_facts(wf, dict(base, refused_products="credit card", proposed_products="credit card", plain_refusal="yes", proposed_amount="510"))
+    assert out["proposal_mode"] == "say"
+    out = run_facts(wf, dict(base, refused_products="credit card", proposed_products="credit card", plain_refusal="yes",
+                             recorded_calls=json.dumps({"p1": ["add_note"]})))
+    assert out["proposal_mode"] == "llm"
+    cents = json.loads(json.dumps(products)); cents[0]["minimum_payment"] = 61.2
+    out = run_facts(wf, dict(base, account_products=json.dumps(cents), refused_products="credit card", proposed_products="credit card", plain_refusal="yes"))
+    assert out["proposal_say"] == "I understand. For your credit card ending 9015, can you pay 61.20 on Friday, 23 October?"
+    twins = json.loads(json.dumps(products)); twins[2] = dict(twins[1], product_id="p3")
+    out = run_facts(wf, dict(base, account_products=json.dumps(twins), refusal_counts=json.dumps({"p1": 2, "p2": 1, "p3": 1}),
+                             refused_products="p2", proposed_products="p2", plain_refusal="yes"))
+    assert json.loads(out["refusal_counts"])["p2"] == 2 and out["proposal_mode"] == "llm"
     # One product keeps the model's own counting.
     out = run_facts(wf, dict(base, account_products=json.dumps(products[:1]), refusal_counts=json.dumps({"p1": 1}),
                              refused_products="credit card", proposed_products="credit card", plain_refusal="yes"))
