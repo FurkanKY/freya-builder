@@ -139,7 +139,7 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 | 20261010T165437-661845Z | disabled | 11/13 | 9/13 | susma 0. PUB-07 0/3 (tatil yerine son tarih önerildi), PUB-12 0/3 (deneme sayısı), PUB-03 1 (bozuk simülatör mesajında 3. cevap kaçtı), PUB-05 1 (destek iki kez teklif edildi) |
 - Kapalı modda çok ürünlü PUB-11 ve PUB-13 3/3 geçti. Kampanya süresi 549 sn; açık modda 865 sn.
 - Kapalı moddaki hatalar, projenin ilk ölçümündeki (reasoning'siz) hatalarla aynı: PUB-07 ve PUB-12. Deterministikler, kodla düzeltilebilir. Açık moddaki susma ise model bütçesinden kaynaklanıyor ve düzeltilemiyor.
-- Fable danışması: ürün başına düğüm döngüsü kurulmasın; doğrulanmamış platform davranışı çok, grup cevabı yine üç ürünü birden düşündürür. Reasoning kapatılsın, mantık koda taşınsın.
+- İkinci görüş: ürün başına düğüm döngüsü kurulmasın; doğrulanmamış platform davranışı çok, grup cevabı yine üç ürünü birden düşündürür. Reasoning kapatılsın, mantık koda taşınsın.
 - Karar (2e46300):
   - reasoning varsayılan olarak disabled;
   - müşterinin söylediği gün extraction ile okunuyor (`named_date`); `check_date` kod düğümü takvim, tatil ve son tarih hükmünü NAMED DAY CHECK satırına yazıp değişkeni temizliyor, sonra negotiate'e dönülüyor;
@@ -186,12 +186,12 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - kod bu sözcükleri ürün id'lerine eşliyor: tek ürüne ait bir sözcük o ürünü seçiyor, "loan" gibi ortak bir sözcük sahibi olan tüm ürünleri. Ardından ürün başına sayacı (`refusal_counts`) artırıyor, alanı "none"a çeviriyor ve PROPOSAL COUNT satırını (`plan_state`) yazıyor. Bu satırda her ürün için ya sıradaki teklif ("attempt k: …") ya da STOP var;
   - hiçbir ürünle eşleşmeyen çıplak bir "no", planı süren tek bir ürün varsa o ürüne yazılıyor;
   - tek ürünlü çağrılarda sayaç kapalı (yönlendirme `product_count != 1` koşuluna bağlı), bugün geçen akış değişmiyor.
-- Fable danışması, benimsenenler:
+- İkinci görüş, benimsenenler:
   - ürün asistanın sözcükleriyle adlandırılıyor;
   - kaçamak cevaplar sayılmıyor, yalnız açık retler sayılıyor;
   - çıplak hayır için yedek kural var;
   - tek ürün kapsam dışı.
-- Fable danışması, benimsenmeyenler:
+- İkinci görüş, benimsenmeyenler:
   - "Gün söylendiyse reddi yok say": PUB-12'deki "kartı yarın öderim, kredileri ödemem" cümlesinde gün ile ret birlikte geliyor;
   - `promised_products` değişkeni: post-hook `vars`'a erişemiyor;
   - plan zincirinin prompttan çıkarılması: "too much" akışında modelin adımların tamamına ihtiyacı var.
@@ -264,7 +264,7 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Hiçbir üründe teklif kalmadıysa satır şöyle: "ödeme isteme, müşterinin gün verdiği ürünleri geri okuyup kaydet, teklifsiz ürünler için politikayı uygula ve kapat". Bu satır, teklif kalmadığı sürece sonraki turlarda da duruyor.
   - Müşterinin gün verdiği ürün artık "nothing refused yet" diye değil, "müşteri bir gün veya tutar verdi" diye gösteriliyor.
 - 4d4f7b2'nin build testi de 12/13 oldu (spec_vote 74/74/74, farklı alan yok). PUB-12 yine düştü: model STOP'tan sonra araç kredisine tabanı teklif etti. "NEXT STEP" satırı tek başına yetmedi; model kendi önceki mesajının kalıbını kopyalıyor.
-- Düzeltme (a729e19), kapanış düğümü `wrap_up`. Fable 5.1'e danışıldı; önerileri de içinde.
+- Düzeltme (a729e19), kapanış düğümü `wrap_up`. İkinci bir görüş alındı; önerileri de içinde.
   - Her ürün ya STOP'ta ya da müşterinin kendi gün veya tutar verdiği durumdaysa (ve en az biri STOP'taysa) `check_date`, `negotiation_done = yes` ile konuşmayı `wrap_up`'a yönlendiriyor.
   - `wrap_up`'ta pazarlık planı, taban ve deneme adımları yok. Yalnız ürünlerin durumu (DONE satırı, rakamsız) ve en sona konan tek somut sonraki adım var: müşterinin verdiğini geri oku ve onayla, ya da teklifsiz ürünler için politikayı uygula ve kapat.
   - Yasak cümlelerinde rakam geçmiyor ("propose no amount and no date"), çünkü model yasaklanan rakamı da kopyalıyordu.
@@ -272,7 +272,7 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - r6, 4d4f7b2 AB × 3 (sonuçlar platformdan doğrudan okundu): PUB-12 üç tekrarda da düştü. PUB-05 üçüncü tekrarda "inconclusive", geri kalan 11 müşteri 3/3 geçti.
   - Üçüncü tekrarın simülasyonu (0ea8137c, 23:20) bütün konuşmaları 23:22'de bitirip değerlendirdiği halde platformda 30 dakikadan uzun süre "running" kaldı. Kit koşucusu bu durumu beklemekten başka bir şey yapamıyor; aynı şey 22:46'daki simülasyonda da 23 dakika sürmüştü.
   - Final build'i `--suite` kullanmadığı için bu takılma finali etkilemez. Ölçüm betikleri artık bir build veya kampanyadan önce çalışma alanında koşan simülasyon kalmamasını bekliyor.
-- Fable 5.1 ile ikinci danışma (a729e19 üzerine):
+- İkinci görüşün ikinci turu (a729e19 üzerine):
   - Sayaç doğru. Model, kişisel krediye kullandığı kalıbı (1. deneme, ardından son tarihte taban) araç kredisine kopyalıyor. 46 ve "2 Kasım" istemde hâlâ görünüyordu: band satırı ("Band early … deadline 2026-11-02"), takvimdeki "deadline of p3" ve geçmişteki ham get_account.
   - a729e19'daki `check_date → wrap_up` geçişi en üstte `"logic": "and"` kullanıyordu. workflow-format.md'ye göre en üst grup "or" olmazsa koşul sessizce düşüyor, yani kapanış düğümüne hiç girilemiyordu.
 - Düzeltme (02c6f7c):
@@ -312,7 +312,7 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
     - PUB-10 1/3: yargıç, başarısız create_promise'ın yeniden denemesini çift kayıt sandı; başarısız çağrılar dökümde görünmüyordu. Döküm artık `function_call_error` olaylarını da gösteriyor.
     - PUB-12 1/3: son reddin turunda model, temiz plan satırlarına rağmen bitmiş ürüne bir teklif daha yaptı (önceki tekliflerin kalıbını kopyalama).
   - Varyantlar × 3: 5 vakanın 1'i her tekrarda geçti (PUB-11 2/3, PUB-12-v2 1/3, PUB-13-v1 2/3, PUB-13-v2 2/3).
-- Fable 5.1 ile üçüncü danışma (PUB-12, kalıp kopyalama): öneri, son reddin turunda geri okumayı modelden almak ve kodun kurduğu sabit bir satırı söyletmek.
+- İkinci görüşün üçüncü turu (PUB-12, kalıp kopyalama): öneri, son reddin turunda geri okumayı modelden almak ve kodun kurduğu sabit bir satırı söyletmek.
 - Düzeltme (bb5fd76): `check_date`, kapanış adımı tek bir geri okumaysa ve müşteri kendi tutarını söylememişse `wrap_up_readback` düğümüne gidiyor. Bu düğümün girişi `tts` ("Understood. Let me read back your promise: … Do you confirm?"), yani o tur model çağrısı yok. Satır çağrı başına bir kez söyleniyor; sonraki turlarda adım "geri okuma söylendi, evet gelirse create_promise" diyor. Onay sorusu politikada tırnak içinde varsa oradan alınıyor. Yeni çıkarım alanı `named_amount_words`, müşteri kendi tutarını söylediyse sabit satırı kapatıyor.
 - bb5fd76, sürüm 25: PUB-12 × 4 sohbet, 4/4 geçti; dört koşuda da sabit satır birebir söylendi, "evet"ten sonra create_promise ve iki not, sonra close_call.
 - Sürüm 24'ün beş başarısız koşusu için teşhis iş akışı (her vaka için teşhis ve ayrı bir eleştirmen; yalnız okuma):
@@ -439,7 +439,7 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - Üçüncü toplu düzeltme 6be7c7c'de. fc87ced: sabit İngilizce geri okuma satırı yalnız İngilizce konuşan bir ajanda kullanılıyor. Held-out bir vaka arama gününü (`now_override`) değiştirebiliyor.
 
 ## Aşama 18 — Pazar 10:50–: ezber testi (held-out brief'ler) ve ölçüm
-- Public sonuçların ezberden gelmediğini görmek için builder'ın hiç görmediği iki brief yazıldı (Fable yazarları, ayrı doğrulayıcılar):
+- Public sonuçların ezberden gelmediğini görmek için builder'ın hiç görmediği iki brief yazıldı (ayrı yazarlar, ayrı doğrulayıcılar):
   - H1 (`tests/fixtures/holdout1/`): A+B'nin aynı kuralları, ham banka malzemesi biçiminde (posta zinciri, politika özeti, memo, kod listesi). Kit'in A ve B vakalarıyla ölçülüyor.
   - H2 (`tests/fixtures/holdout2/`): başka kurallar, aynı practice müşterileri; 13 uyarlanmış vaka, bazıları başka bir arama gününde.
 - Ölçüm (fc87ced, public-b v29, public-a v6; okumaların üçü de 82 alanda aynı): B 2/3 vaka, varyantlar 4/6, A 9/10, tek tekrarla.
