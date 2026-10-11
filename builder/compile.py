@@ -617,6 +617,23 @@ def _title_code(language):
             "    if _said:\n        vars['title'] = _said\nexcept Exception:\n    pass\n")
 
 
+def _first_turn(spec):
+    """The agent's first turn. Seen in a held-out Turkish brief: the opening sentence is a statement and the policy asks
+    '{ad} {soyad} ile mi görüşüyorum?' right after it; the example calls say both in one turn, but the agent said the
+    statement alone and the caller had to answer it first. An opening without a question gets the first quoted question
+    of the pre-verification checklist that names the person through call variables."""
+    line = spec.get("opening_line") or "Hello."
+    if "?" in line:
+        return line
+    names = set(spec.get("call_variables") or []) - {spec.get("now_variable")}
+    steps = str((spec.get("policy") or {}).get("before_verification") or "")
+    for m in re.finditer(r"(?<!\w)['\"“‘]([^'\"“”‘’\n]{3,120}\?)['\"”’]", steps):
+        used = re.findall(r"\{\{\s*([^}]+?)\s*\}\}", m.group(1))
+        if used and set(used) <= names:
+            return line.rstrip() + " " + m.group(1).strip()
+    return line
+
+
 def compile_workflow(spec, api, briefs):
     from .spec import normalize_spec, resolve_refs, who_variables
     api = resolve_refs(api)
@@ -842,7 +859,7 @@ def compile_workflow(spec, api, briefs):
         "prepare": code_node("prepare", "identify", code=(title + copy + facts_code) if (title or copy) else None),
         "identify": {
             "name": "identify", "node_type": "conversation",
-            "on_enter": {"type": "tts", "text": spec.get("opening_line") or "Hello."}, "on_enter_first_entry_only": True,
+            "on_enter": {"type": "tts", "text": _first_turn(spec)}, "on_enter_first_entry_only": True,
             "task_message": identify_task,
             "tools": identify_tools,
             "max_node_turns": 80, "max_turn_transition": "hang_up",

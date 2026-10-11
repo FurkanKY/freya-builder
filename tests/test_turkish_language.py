@@ -186,3 +186,18 @@ def test_a_turkish_agent_gets_the_frame_sentences_and_the_honorific_in_turkish()
     variables = {"title": "Mr", "now": "2026-10-14T11:00"}
     exec(compile(_code(_spec("English"), "prepare"), "prepare", "exec"), {"vars": variables})
     assert variables["title"] == "Mr"
+
+
+def test_an_opening_without_a_question_is_followed_in_the_same_turn_by_the_checklist_question_naming_the_person():
+    spec = _spec("Turkish")
+    spec["opening_line"] = "Merhaba, ben Freya Bank'ın dijital asistanıyım. Bu görüşme kayıt altına alınmaktadır."
+    spec["policy"]["before_verification"] = ("1) Açılışta opening_line birebir söylenir. 2) '{{first_name}} {{last_name}} ile mi"
+                                             " görüşüyorum?' diye sorulur; yalnızca 'evet' veya 'benim' onaydır.")
+    said = compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["on_enter"]["text"]
+    assert said == spec["opening_line"] + " {{first_name}} {{last_name}} ile mi görüşüyorum?"
+    # An opening that already asks, or a checklist question naming no call variable, leaves the opening as it is.
+    spec["policy"]["before_verification"] = "1) Açılış söylenir. 2) 'Kiminle görüşüyorum?' diye sorulur."
+    assert compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["on_enter"]["text"] == spec["opening_line"]
+    spec["opening_line"] = "Hi, this is Freya Bank. Am I speaking with {{first_name}}?"
+    spec["policy"]["before_verification"] = "1) Ask '{{first_name}} {{last_name}}, is that you?'"
+    assert compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["on_enter"]["text"] == spec["opening_line"]
