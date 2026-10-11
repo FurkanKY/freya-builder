@@ -15,6 +15,11 @@ class Unavailable(TransientError):
     """The service answered that it cannot take requests now (429, 502, 503, 504): the request was not run."""
 
 
+class Unreachable(TransientError):
+    """No answer in time or a dropped connection. Seen Sunday 12:50: a loaded staging timed out a validation three times
+    in a row and the build failed. Retried like Unavailable."""
+
+
 AGENT_LLM = {"provider":"experimental-5", "model":"experimental-5"}
 
 
@@ -27,14 +32,14 @@ class Client:
         self.finalizing=False
 
     def api(self,method,path,body=None,finalizing=False,**params):
-        # Transient failures (5xx, dropped connections, timeouts) get two more tries; 4xx never retries.
-        # A service that says it is unavailable is retried as long as the budget leaves time, with a growing
+        # Other 5xx answers get two more tries; 4xx never retries. A service that says it is unavailable, does not
+        # answer in time or drops the connection is retried as long as the budget leaves time, with a growing
         # pause: an outage of some minutes then costs build time instead of the build.
         attempt=0
         while True:
             try:
                 return self._api(method,path,body,finalizing,params)
-            except Unavailable:
+            except (Unavailable,Unreachable):
                 attempt+=1
                 pause=min(30,2*attempt)
                 left=self.budget.remaining() if finalizing or self.finalizing else self.budget.available()
@@ -60,7 +65,7 @@ class Client:
             if exc.code>=500: raise TransientError(detail) from None
             raise RuntimeError(detail) from None
         except (urllib.error.URLError,TimeoutError,ConnectionError) as exc:
-            raise TransientError(f"Freya {method} {path} unreachable: {type(exc).__name__}") from None
+            raise Unreachable(f"Freya {method} {path} unreachable: {type(exc).__name__}") from None
         if isinstance(result,dict) and result.get("success") is False:
             raise RuntimeError("Freya API rejected request: "+str(result.get("data",{}).get("message","unknown error"))[:500])
         return result.get("data",{}).get("result",result) if isinstance(result,dict) else result

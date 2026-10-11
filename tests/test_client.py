@@ -66,6 +66,14 @@ def test_an_unavailable_service_is_retried_while_the_budget_allows(tmp_path, mon
         return {"ok": True}
     c = Client("unused", Budget(1800), workspace_id="ws", state_path=tmp_path/'state.json', transport=down)
     assert c.api("GET", "/x") == {"ok": True} and len(calls) == 20 and max(pauses) == 30
+    # A service that does not answer in time is retried the same way.
+    calls.clear()
+    def slow(method, path, body, params, timeout):
+        calls.append(path)
+        if len(calls) < 6: raise freya_client.Unreachable("Freya POST /api/v2/workflow unreachable: TimeoutError")
+        return {"ok": True}
+    c = Client("unused", Budget(1800), workspace_id="ws", state_path=tmp_path/'state.json', transport=slow)
+    assert c.api("POST", "/x") == {"ok": True} and len(calls) == 6
     # With no time left for a pause, the error comes back at once.
     calls.clear()
     c = Client("unused", Budget(150), workspace_id="ws", state_path=tmp_path/'state.json', transport=down)
