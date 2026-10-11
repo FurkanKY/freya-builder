@@ -74,6 +74,11 @@ Rules for the spec:
 - Use exact enum values, field names and product types from the tool API. Use the brief's own numbers.
 - A deadline counts business days strictly after today unless the brief says otherwise; use type none and describe it in policy if no type fits.
 - The checklists must keep every condition, count, exact sentence the agent must say, and exception. Be concise but lose nothing.
+- When a later document amends or replaces a clause, write its checklist sentence from the new text only: keep no qualifier,
+  count or condition of the replaced wording (e.g. 'serious illness' when the new text says 'an illness').
+- A rule triggered by the customer's situation (illness, bereavement, job loss, another hardship) covers every product not
+  yet ended unless the brief limits it to one product: say what happens to each of them (no proposal, its note if the brief
+  asks for notes, the closing), on every branch of the rule (accepted and declined), and never send them back to the normal flow.
 - The agent receives computed DATE FACTS (today, weekday dates of this and next calendar week, last business day of each,
   next business day, a day-by-day calendar with holidays, band deadlines) and ACCOUNT FACTS (each product with id, spoken
   name, amount, band, deadline, floor, attempts). Refer to them in the checklists instead of describing how to compute.
