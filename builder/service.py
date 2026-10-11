@@ -45,7 +45,7 @@ Rules:
 # Generic inbound-service mechanics; the bank's script and rules follow it in the task.
 SERVICE_FRAME = """You are the bank's phone assistant on an inbound call. The phone menu has already identified the caller: never ask for what THIS CALL gives.
 {start}
-Keep turns short and ask one question at a time, but say each quoted SCRIPT sentence in full, and give the figures one SCRIPT step reads in one turn before asking that step's question. Never stop in the middle of a step to wait for a reply the SCRIPT does not ask for: a turn ends only with a question to the caller, or with closing or hand-off words. After you read figures, go on in the same turn: call the tool the next SCRIPT step needs, then ask that step's question (such as another card, or what else you can do).
+Keep turns short and ask one question at a time, but say each quoted SCRIPT sentence in full, and give all the figures one SCRIPT step reads in one message. Never stop in the middle of a step to wait for a reply the SCRIPT does not ask for: a turn ends only with a question to the caller, or with closing or hand-off words. A message with no tool call ends your turn and the caller speaks next. So before the message that reads figures, first call each tool the following SCRIPT steps need up to their next question (for example the lookup an offer depends on); then say the figures and end that same message with that next question (such as another card, or the offer).
 Follow the SCRIPT in order and take its branches exactly; the RULES apply throughout. Never invent figures, dates, cards, fees, addresses or reasons: each comes from a tool result, THIS CALL, DATE FACTS or the RULES. Before you say any amount, date, card detail or address, the tool the SCRIPT names for it must have returned it in this call for the card being discussed; when the caller picks another card, call that card's tools again before saying anything about it.
 Tool use: when the script says to call a tool, CALL it through the tool interface; saying you did is not enough. Never write a tool name, '_call', braces or code in a reply: replies are spoken. Call at most one tool per message. After every tool result, speak to the caller (or call the next tool the script names); never end a turn with nothing. Never say an action was done unless its tool succeeded.
 After every tool result read its what_to_do_next field; 'the policy' there means the SCRIPT and RULES. A FAILED result whose status or message the SCRIPT or RULES name is that branch (for example no card, no debt, no address, already changed), not a fault: follow it. Any other failure: call the same tool once more with the same values. If it fails again, tell the caller in one sentence that this information cannot be reached right now, then do what HANDOFFS say for a failure, or else offer what is left and close. Never read error codes, field names or raw values to the caller.
@@ -59,11 +59,12 @@ SERVICE_THINKING = """Think briefly, in a few short lines at most: which SCRIPT 
 
 SPOKEN_START = ("The opening line has already been said. On the caller's first message, start at SCRIPT step 1 and call its tool,"
                 " unless they ask for a person or to pay (HANDOFFS).")
-TOOL_START = ("Your first line, already said, only told the caller you are checking their information. On the caller's next"
-              " message, whatever it is, start at SCRIPT step 1 and call its tool, unless they ask for a person or to pay (HANDOFFS);"
-              " what they asked for is kept for the steps after.")
+TOOL_START = ("Your first line, already said, only told the caller you are checking their information. On your next turn,"
+              " whatever starts it (the caller's message or a silence), start at SCRIPT step 1 and call its tool, unless they ask for a"
+              " person or to pay (HANDOFFS); what they asked for is kept for the steps after.")
 ENTRY_PROMPT = ("Say only one short sentence in the call's language telling the caller you are checking their information (the"
-                " documents' own sentence for a wait, if the RULES quote one). Nothing else. Do not call, name or write any tool.")
+                " documents' own sentence for a wait, if the RULES quote one), without asking them to wait or do anything. Nothing"
+                " else. Do not call, name or write any tool.")
 
 
 def spoken_opening(line, variables):

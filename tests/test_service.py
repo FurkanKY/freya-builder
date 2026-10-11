@@ -187,6 +187,8 @@ def test_an_opening_with_unfilled_slots_is_not_spoken_as_is_and_the_agent_starts
     assert "Do not call, name or write any tool" in ENTRY_PROMPT
     assert "start at SCRIPT step 1 and call its tool" in TOOL_START
     assert "Never write a tool name, '_call'" in SERVICE_FRAME and "a turn ends only with a question" in SERVICE_FRAME
+    # a text-only message ends the turn: the lookups a later question needs run before the figures are read
+    assert "A message with no tool call ends your turn" in SERVICE_FRAME
 
 
 def test_service_tools_wait_longer_than_the_collection_default_for_a_slow_answer():
