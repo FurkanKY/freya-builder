@@ -259,7 +259,9 @@ def compile_workflow(spec, api, briefs):
         "PHASE: before identity verification. The account is not visible yet and must not be discussed.",
         policy.get("before_verification"),
         "Security questions, in order (verify_identity field value: question):\n" + questions if questions else "",
-        "Call verify_identity once for each answer the customer gives, with the field of the question you asked.",
+        "Call verify_identity once for each answer the customer gives, with the field of the question you asked. An answer that"
+        " comes together with a question or a complaint (a date followed by \"so how much do I owe?\") is still an answer: verify it"
+        " first, then reply.",
         "DATE FACTS:\n{{date_facts}}",
     ]))
     negotiate_task = "\n\n".join(filter(None, [
