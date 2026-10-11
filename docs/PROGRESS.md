@@ -330,3 +330,18 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - `chat_cases.py`: platform hatası alan her başarısız koşu INFRA sayılıyor ve yeniden koşturuluyor.
   - 65 test geçiyor.
 - A vakalarının ölçümü artık yalnızca brief-a.md ile derlenen public-a ajanında yapılıyor (finaldeki gibi tek brief, tek ajan); B vakaları ve varyantlar A+B ile derlenen public-b ajanında ölçülüyor.
+- Pazar 03:20: ölçüm sırasında `claude` CLI hesabının 5 saatlik sınırı doldu ("You've hit your session limit · resets 6:10am"). Müşteri personası, yargıç ve builder'ın brief okuması bu hesabı kullanıyor. Aynı dakikalarda makinede kısa bir DNS kesintisi de oldu. Sınırdan sonraki koşular geçersiz (yargıç cevap vermedi).
+  - Geçerli koşulardan, bb5fd76 (sürüm 25, A+B): PUB-01..04 3/3, PUB-07 2/2, PUB-10 2/2, PUB-11 2/2, PUB-13 2/2. PUB-05 0/3 ve PUB-08 0/2 (tek ürünlü A müşterisine not, A+B birleşiminin yapaylığı). PUB-06 1/2: müşteri asgari tutarı sorunca ajan tutarı tekrar söyledi, yargıç ikinci teklif saydı. PUB-12 1/2: r2'de müşteri personası senaryodan çıkıp araç kredisini kabul etti, ajan doğru davrandı.
+  - 23c6556, yalnız brief-a ile derlenen public-a (sürüm 2): PUB-01, 02, 04 1/1. PUB-03 r1: üçüncü yanlış doğum tarihi "borcum ne kadar?" sorusuyla geldi, ajan verify_identity'yi çağırmadan tarihi bir kez daha sordu. Tek görülme, izleniyor.
+  - FINAL.md'ye kontrol satırı eklendi: finalde builder aynı CLI hesabını kullanacağı için 15:00'ten sonra ölçüm yok, 19:50'de CLI'ın cevap verdiği kontrol ediliyor.
+- 23c6556 için üç açıdan inceleme iş akışı (sayaç, zayıf model ve gizli brief'lere genelleme), her bulgu ayrıca çürütülmeye çalışıldı. Doğrulanan dört bulgu:
+  - `asked_back`, ilk sorudan sonra gelen bir talepte ("daha düşük taksit olur mu?", "bir insanla konuşabilir miyim?") ya da zorluk bildirildikten sonraki "destek ekibi ne yapar?" sorusunda da "yes" olabiliyordu; adım o zaman ödeme teklifi yaptırıyordu.
+  - Diğer ürünler STOP'a gelince, itiraz edilen ya da "ödendi" denen ürüne 1. deneme yazılıyordu.
+  - Konuşmanın ortasında kaydedilen bir söz, sayacı sıfırdan büyükse ürünü bitmiş saydırmıyordu.
+  - ("bugün" koruması, dated_products çıkarımı "kartı bugün öderim" cevabını kaçırırsa o ürünü Cuma teklifine düşürüyor; koruma PUB-11 r3 yüzünden kaldı, bu yalnız çıkarım kaçarsa olur.)
+- Düzeltme (2583e08):
+  - `asked_back` yalnız istenen ödemeyle ilgili çıplak soruda "yes"; talepler, destek sorusu, zorluk, itiraz ve "ödendi" "no". Kendi gününü söyleyen soru, soru turu sayılmıyor. Soru adımının kendisi de "politika istisnası varsa onu uygula, teklif yapma" diyor.
+  - Teklif almadan notu yazılmış ürün kapanmış sayılıyor (teklif yok, kapanışta "notu zaten yazıldı").
+  - Sözü kaydedilmiş ürün, sayacı ne olursa olsun teklif almıyor ve kapanışta "söz kaydedildi" sayılıyor.
+  - Soruyla kapanan ilk soru sonraki turlarda da kapalı kalıyor (`first_ask_closed`).
+  - 65 test geçiyor.
