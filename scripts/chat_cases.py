@@ -89,6 +89,25 @@ def trace(call_id):
     return lines, ended
 
 
+def reply_in_record(call_id, text, sent):
+    """The agent's reply to `text` when the call record already has it. Seen: the server took a line whose reply timed out
+    (504), and resending the line branched the call back to an earlier node ("conversation_resumed", isBranch)."""
+    for wait in (10, 15, 20):
+        time.sleep(wait)
+        try:
+            msgs = [m for m in freya.get_call(call_id).get("messages", []) if m.get("role") in ("user", "assistant", "bot")]
+        except Exception:
+            continue
+        users = [i for i, m in enumerate(msgs) if m["role"] == "user"]
+        # `sent` counts this line: a record with fewer customer lines never got it (a repeated "Yes." is not taken for it).
+        if len(users) < sent or str(msgs[users[-1]].get("message") or "").strip() != text.strip():
+            return None                       # the line never reached the agent: resend it
+        after = [str(m.get("message") or "") for m in msgs[users[-1] + 1:]]
+        if after:
+            return "\n".join(after)
+    return None
+
+
 def call_ended(call_id):
     try:
         return trace(call_id)[1]
@@ -134,6 +153,10 @@ def run_case(wid, case, style, outdir, tag):
             except Exception as e:
                 note = str(e)[:160]
                 if call_id and call_ended(call_id):
+                    break
+                late = reply_in_record(call_id, msg, len(convo) // 2 + 1) if call_id else None
+                if late is not None:
+                    agent = late
                     break
                 time.sleep(5)
         if agent is None:
