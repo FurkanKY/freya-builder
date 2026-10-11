@@ -8,7 +8,7 @@ Times are Istanbul time (UTC+3). Briefs open at 20:00, submissions close at 23:0
 - `submission/` holds no rehearsal files.
 - No simulation is running in the workspace.
 - `.env` sets `BUILDER_MODEL=claude-sonnet-5` (or leaves it out), never the bare alias `sonnet`: a Claude Code update can move the alias to another model, and every measured build used `claude-sonnet-5`. After each build, the `model_start` lines in the trace name `claude-sonnet-5`.
-- The builder reads the brief through the `claude` CLI and its logged-in account, so that account's 5-hour usage limit must have room from 20:00 on. `scripts/chat_cases.py` uses the same account for its customer and its judge, and a full measurement can use up a whole window (seen Sunday 03:20: "You've hit your session limit"). Run no measurement after 15:00. At 19:50, `claude -p --model claude-sonnet-5 "say ok"` answers with no limit message.
+- The builder reads the brief through the `claude` CLI and its logged-in account, so that account's 5-hour usage limit must have room from 20:00 on. `scripts/chat_cases.py` uses the same account for its customer and its judge, and a full measurement can use up a whole window (seen Sunday 03:20: "You've hit your session limit"). The window is 5 hours from its first use: on Sunday one opened at 06:10 and a full measurement used it up by 07:30; the next opens at 11:10 and closes at 16:10. Use the CLI for nothing between 16:10 and 19:50, so the check at 19:50 opens a fresh window that lasts until 00:50: `claude -p --model claude-sonnet-5 "say ok"` answers with no limit message.
 
 ## For each final brief (slot final-1 for the first, final-2 for the second)
 1. Put the brief files and the tool API file in a new folder `final/<n>/`, unchanged.
