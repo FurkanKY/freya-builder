@@ -313,6 +313,9 @@ def _resolve_day(words, today):
         return []
     wd = [i for i, d in enumerate(WEEKDAYS) if d.lower() in tokens]
     if len(wd) != 1:
+        # "I can't pay right now" is about today, like "today", when the words name no other day.
+        if not wd and not month and re.search(r" (right now|now|at the moment|immediately|straight away|this minute) ", joined):
+            return [today]
         return []
     coming = today + datetime.timedelta(days=(wd[0] - today.weekday()) % 7)
     if " after next " in joined:
@@ -327,6 +330,11 @@ def _resolve_day(words, today):
     if coming == today:
         return [today, today + datetime.timedelta(days=7)]
     return [coming]
+
+
+VAGUE_DAY = set(["week", "weekend", "fortnight", "month", "year", "payday", "salary", "wage", "pension", "paycheck", "paycheque",
+                 "end", "beginning", "start", "mid", "middle", "later", "soon", "next", "after", "before", "until", "till"]
+                + [m for m in MONTHS if m] + [d.lower() for d in WEEKDAYS])
 
 
 def _named_day(today, workdays, holidays, deadlines):
@@ -899,11 +907,14 @@ def run():
         deadlines = [("band " + str(b.get("name")), b.get("_deadline")) for b in bands if b.get("_deadline")]
     vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
     day_words = str(vars.get("named_day_words") or "").strip()
-    day_named = bool(day_words) and day_words != "none"
+    given = day_words.strip(" .'\"").lower() not in ("", "none", "n/a", "null", "no")
     try:
-        resolved = _resolve_day(day_words, today) if day_named else []
+        resolved = _resolve_day(day_words, today) if given else []
     except Exception:
         resolved = []
+    # Words that name no day ('then', 'that day', 'yes'), seen extracted at confidence 0.95, are no day of the customer's
+    # own: counted as one, they hid the next proposal. A vague period ('next month', 'when my salary comes') still is.
+    day_named = bool(resolved) or (given and bool(_tokens(day_words) & VAGUE_DAY))
     named_date = resolved[0].isoformat() if len(resolved) == 1 else None
     count = len(rows)
     counts, changed, dated_now, question = _count_refusals(plans, day_named, named_date, today.isoformat())

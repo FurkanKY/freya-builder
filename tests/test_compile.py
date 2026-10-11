@@ -647,6 +647,17 @@ def test_the_first_ask_is_not_asked_again_after_today_or_a_question():
     why = run_facts(wf, dict(asked, named_day_words="Friday", asked_back="yes", proposed_products="credit card"))
     assert json.loads(why["refusal_counts"]) == {} and "NEXT STEP" not in why["plan_state"]
     assert why["first_ask_open"] == "no" and "p2 personal loan: refused 0 times; nothing refused yet; the first ask already covered it" in why["plan_state"]
+    # "Why do you need it right now?": 'right now' is today, so the question still closes the first ask.
+    now = run_facts(wf, dict(base, named_day_words="right now", asked_back="yes", refused_products="none", proposed_products="all"))
+    assert now["first_ask_open"] == "no" and now["plan_state"].startswith("NEXT STEP: the first ask is made")
+    # Words that name no day are no day of the customer's own. Seen in a chat run: 'then' extracted at confidence 0.95.
+    # They do not make the products left out of a partial refusal the customer's own offers...
+    then = run_facts(wf, dict(base, named_day_words="then", refused_products="credit card", proposed_products="all"))
+    assert json.loads(then["own_offer_products"]) == [] and json.loads(then["refusal_counts"]) == {"p1": 1}
+    # ...and they do not hide the next proposal after a counted refusal.
+    then = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 1, "p2": 1, "p3": 1}), named_day_words="by then",
+                              refused_products="credit card", proposed_products="credit card"))
+    assert then["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p1 credit card ending 2288: attempt 2:")
     # A question that names a day of the customer's own is an offer, not a bare question.
     dayq = run_facts(wf, dict(base, named_day_words="30 October", asked_back="yes", proposed_products="all"))
     assert "the first ask is made" not in dayq["plan_state"] and dayq["first_ask_open"] == "yes"
