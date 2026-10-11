@@ -369,7 +369,7 @@ def test_a_plain_refusal_gets_the_next_proposal_as_a_fixed_line():
                 {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
     base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "refusal_counts": json.dumps({"p1": 1, "p2": 1, "p3": 1})}
     out = run_facts(wf, dict(base, refused_products="credit card", proposed_products="credit card", plain_refusal="yes"))
-    assert out["proposal_mode"] == "say" and out["plain_refusal"] == ""
+    assert out["proposal_mode"] == "say" and out["plain_refusal"] == "no"
     assert out["proposal_say"] == "I understand. For your credit card ending 9015, can you pay 153 on Friday, 23 October?"
     assert out["next_step"].startswith('NEXT STEP: this proposal has just been said, word for word: "I understand. For your credit card')
     # Anything else in the answer, or a step with a condition in words, stays with the model.

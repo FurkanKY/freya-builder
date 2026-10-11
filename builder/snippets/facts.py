@@ -1338,7 +1338,9 @@ def run():
     if pitch:
         vars["next_step"] = ("NEXT STEP: this proposal has just been said, word for word: \"" + pitch + "\" Wait for the customer's answer;"
                              " if they ask something, answer it and make the same proposal again.")
-    vars["plain_refusal"] = ""
+    # Seen in every call record: "" is outside the extraction's enum, so the platform rejected the reset and the last turn's
+    # "yes" stayed for a turn whose answer the extraction left out (below its confidence).
+    vars["plain_refusal"] = "no"
     vars["proposed_amount"] = "none"
     vars["proposal_mode"] = "say" if pitch else "llm"
     vars["proposal_say"] = pitch or "Thank you."
