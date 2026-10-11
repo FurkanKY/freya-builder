@@ -3,9 +3,12 @@
 Bank facts (fields, enums, calendar, bands, outcomes, policy text) come only from the spec and
 the supplied OpenAPI. This module holds platform mechanics, never bank policy.
 """
+import ast
+import io
 import json
 import re
 import os
+import tokenize
 from pathlib import Path
 
 SNIPPETS = Path(__file__).resolve().parent / "snippets"
@@ -50,6 +53,78 @@ Send dates to tools in the format the tool field or the security question states
 BRIEF_THINKING = """Think briefly before each reply, in a few short lines at most: which product and step you are on, the matching line of ACCOUNT FACTS or DATE FACTS, and what to say or call. Do not restate the policy to yourself. Then always give the reply."""
 
 CLOSE_RULE = """Ending the call: say the required closing words (thank the customer, goodbye) and call close_call in that same message with the outcome and reason that the policy prescribes. close_call is always the very last tool call and is called exactly once."""
+
+
+# Seen live (Sunday 11:55): the platform's code_exec takes at most 131072 bytes of code and call data together. With the
+# full facts.py and spec (94 KB) the check failed from the third negotiation turn on, and the plan stopped moving.
+CODE_LIMIT = 131072
+CODE_BUDGET = 72000          # the code's share: the rest is left for the call's variables, which grow with every turn
+# The spec fields facts.py reads; the policy only for a confirmation question it quotes (same pattern as facts.py).
+CODE_SPEC_FIELDS = ("language", "now_variable", "calendar", "account")
+QUOTED_QUESTION = r"['\"\u201c\u2018]([A-Z][^'\"\u201c\u201d\u2018\u2019{}<>\n]{2,80}\?)['\"\u201d\u2019]"
+
+
+def _no_docstrings(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            body = node.body
+            if len(body) > 1 and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+                node.body = body[1:]
+    return ast.dump(tree)
+
+
+def compact_code(src):
+    """The source without comments, docstrings and blank lines, one space per indent level. Token text is kept as written,
+    so the code runs where the source runs; when the result does not parse to the same program, the source is kept."""
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return src
+    lines = src.split("\n")
+    cut, gone, inside = dict(), set(), set()
+    before = None
+    for i, t in enumerate(toks):
+        if t.type == tokenize.COMMENT:
+            cut[t.start[0]] = t.start[1]
+        elif t.type == tokenize.STRING:
+            after = next((x for x in toks[i + 1:] if x.type not in (tokenize.NL, tokenize.COMMENT)), None)
+            alone = before is None or before.type in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT)
+            if alone and after is not None and after.type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                gone.update(range(t.start[0], t.end[0] + 1))
+            else:
+                inside.update(range(t.start[0] + 1, t.end[0] + 1))
+        if t.type not in (tokenize.NL, tokenize.COMMENT):
+            before = t
+    out = []
+    for row, line in enumerate(lines, 1):
+        if row in gone:
+            continue
+        if row in inside:
+            # A line of a string that spans lines is kept as written, up to a comment after the string's end.
+            out.append(line[:cut[row]].rstrip() if row in cut else line)
+            continue
+        if row in cut:
+            line = line[:cut[row]]
+        line = line.rstrip()
+        if not line.strip():
+            continue
+        lead = len(line) - len(line.lstrip(" "))
+        out.append(" " * (lead // 4 + (lead % 4 > 0)) + line.lstrip(" "))
+    small = "\n".join(out) + "\n"
+    try:
+        same = _no_docstrings(ast.parse(small)) == _no_docstrings(ast.parse(src))
+    except SyntaxError:
+        same = False
+    return small if same else src
+
+
+def code_spec(spec):
+    """The part of the spec the code node reads."""
+    part = {k: spec[k] for k in CODE_SPEC_FIELDS if k in spec}
+    policy = spec.get("policy") if isinstance(spec.get("policy"), dict) else {}
+    part["policy"] = {k: " ".join(m.group(0) for m in re.finditer(QUOTED_QUESTION, str(v or "")))
+                      for k, v in policy.items() if re.search(QUOTED_QUESTION, str(v or ""))}
+    return part
 
 
 def _py_literal(text):
@@ -302,7 +377,8 @@ def compile_workflow(spec, api, briefs):
         CLOSE_RULE,
         ("CLOSING TABLE:\n" + policy["closing"]) if policy.get("closing") else "",
     ]))
-    facts_code = "SPEC_JSON = " + _py_literal(json.dumps(spec, ensure_ascii=True)) + "\n" + (SNIPPETS / "facts.py").read_text()
+    facts_code = ("SPEC_JSON = " + _py_literal(json.dumps(code_spec(spec), ensure_ascii=True, separators=(",", ":"))) + "\n"
+                  + compact_code((SNIPPETS / "facts.py").read_text()))
 
     def code_node(name, target, before=()):
         return {"name": name, "node_type": "code", "passthrough": True, "passthrough_default_transition": target,

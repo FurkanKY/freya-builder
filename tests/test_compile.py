@@ -1220,3 +1220,26 @@ def test_the_next_step_is_the_last_thing_the_negotiating_model_reads():
     assert out["next_step"] in out["plan_state"]
     out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products[:1])})
     assert out["next_step"] == out["plan_state"]
+
+
+def test_the_code_node_fits_the_platforms_limit():
+    # Seen live: code_exec takes at most 131072 bytes of code and call data together; with 94 KB of code the check failed
+    # from the third negotiation turn on. The code keeps CODE_BUDGET, the rest is the call's variables, which grow each turn.
+    from builder import compile as C
+    import ast
+    spec, _ = _three_products_spec()
+    spec["policy"]["after_verification"] = "A long policy text. " * 400 + "Ask \"Do you confirm this promise?\""
+    wf = compile_workflow(spec, API, BRIEFS)
+    code = wf["nodes"]["check_date"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    assert len(json.dumps(code)) < C.CODE_BUDGET
+    src = (C.SNIPPETS / "facts.py").read_text()
+    small = C.compact_code(src)
+    assert len(small) < 0.8 * len(src) and C._no_docstrings(ast.parse(small)) == C._no_docstrings(ast.parse(src))
+    # The policy keeps only the quoted questions, with the pattern facts.py reads them with.
+    assert 'r"' + C.QUOTED_QUESTION + '"' in src
+    scope = {"vars": {}}
+    exec(compile(code, "facts", "exec"), scope)
+    assert scope["_confirm_question"](scope["_spec"]()) == "Do you confirm this promise?"
+    # A string that is not a docstring keeps its lines and its indentation.
+    text = 'def f():\n    """Doc."""\n    # note\n    x = """a\n    b"""  # tail\n\n    return x\n'
+    assert C.compact_code(text) == 'def f():\n x = """a\n    b"""\n return x\n'
