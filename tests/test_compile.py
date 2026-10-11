@@ -1101,6 +1101,11 @@ def test_promise_dates_from_tomorrow():
         out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
     out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan"))
     assert out["wrap_up_mode"] == "llm" and "16 October 2026), is not accepted as it is" in out["plan_state"]
+    # A calendar-day deadline on Saturday 17th does not move back to today, the day a promise may not name.
+    spec, products = _three_products_spec({"type": "calendar_days_after_today", "count": 1, "date": ""})
+    spec["calendar"]["earliest_promise_day"] = "tomorrow"
+    out = run_facts(compile_workflow(spec, API, BRIEFS), {"now": "2026-10-16T10:00", "account_products": json.dumps(products)})
+    assert "deadline 2026-10-17 (Saturday, 17 October 2026)" in out["account_facts"]
 
 
 def test_a_failed_write_and_a_closing_note_under_other_names():

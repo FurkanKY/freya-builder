@@ -121,13 +121,14 @@ def _last_business_of_week(day, workdays, holidays):
     return best
 
 
-def _deadline(rule, today, workdays, holidays):
+def _deadline(rule, today, workdays, holidays, earliest=None):
     """The band's latest promise date. A calendar rule that lands on a weekend or holiday gives the last business day before
-    it (when that is not before today): a promise date is a business day, and the closed-day rule would offer one after it."""
+    it (when that is not before the first day a promise may name): a promise date is a business day, and the closed-day rule
+    would offer one after it."""
     day = _deadline_day(rule, today, workdays, holidays)
     if day is not None and not _is_business(day, workdays, holidays):
         earlier = _previous_business(day, workdays, holidays)
-        if earlier is not None and earlier >= today:
+        if earlier is not None and earlier >= (earliest or today):
             return earlier
     return day
 
@@ -1016,7 +1017,7 @@ def run():
     band_lines = []
     far = today + datetime.timedelta(days=21)
     for band in bands:
-        dl = _deadline(band.get("deadline"), today, workdays, holidays)
+        dl = _deadline(band.get("deadline"), today, workdays, holidays, earliest)
         band["_deadline"] = dl
         if dl and dl > far:
             far = dl
