@@ -22,6 +22,8 @@ from score import http, score_ledger
 from run_cases import persona_for
 
 LOCK = threading.Lock()
+# Set when the claude CLI reports its usage limit: the customer and the judge are gone, so the rest is not run.
+LIMIT = []
 PERSONA_MODEL = os.environ.get("CHAT_PERSONA_MODEL", "sonnet")
 
 
@@ -31,6 +33,10 @@ def claude(system, text, model, timeout=120):
             out = subprocess.run(["claude", "-p", "--model", model, "--system-prompt", system, "--tools", "",
                                   "--no-session-persistence", "--setting-sources", ""],
                                  input=text, capture_output=True, text=True, timeout=timeout)
+            said = (out.stdout + out.stderr).strip()
+            if re.search(r"hit your (session|usage|weekly) limit|usage limit reached", said, re.I):
+                LIMIT[:] = [said[:120]]
+                return ""
             if out.returncode == 0 and out.stdout.strip():
                 return out.stdout.strip()
         except subprocess.TimeoutExpired:
@@ -105,10 +111,13 @@ def judge(case, lines):
         raw = raw.replace(chr(92) + chr(39), chr(39))
         return json.JSONDecoder().raw_decode(raw[raw.index("{"):])[0]["checks"]
     except Exception:
-        return [{"check": "judge", "true": False, "why": "no verdict: " + raw[:200]}]
+        return [{"check": "judge", "true": False, "why": "no verdict: " + raw[:200], "infra": True}]
 
 
 def run_case(wid, case, style, outdir, tag):
+    if LIMIT:
+        return {"id": case["key"], "tag": tag, "pass": False, "infra": True, "failed": [], "call_id": None, "tools": [],
+                "note": "not run: " + LIMIT[0]}
     variables = http("/v1/practice/sessions", {"case": case["id"]})["variables"]
     persona = persona_for(case, {"identity": case["identity"]}, style)["prompt"]
     call_id, convo, msg, note = None, [], "Hello?", ""
@@ -131,7 +140,11 @@ def run_case(wid, case, style, outdir, tag):
         transcript = "\n".join(f"{who}: {text}" for who, text in convo)
         msg = claude(persona, "CONVERSATION SO FAR (you are CUSTOMER, the bank is CALLER):\n" + transcript
                      + "\n\nWrite only your next line as CUSTOMER.", PERSONA_MODEL)
-        msg = re.sub(r"^\s*CUSTOMER:\s*", "", msg).strip() or "Sorry?"
+        msg = re.sub(r"^\s*CUSTOMER:\s*", "", msg).strip()
+        if not msg:
+            # No customer line (the CLI failed or hit its limit): the call would go on with a customer who says nothing.
+            note = note or "customer: no reply" + (" (" + LIMIT[0] + ")" if LIMIT else "")
+            break
         if re.search(r"goodbye", msg, re.I) and call_id and call_ended(call_id):
             break
     try:
@@ -146,6 +159,8 @@ def run_case(wid, case, style, outdir, tag):
     except Exception as e:
         lines = [f"(trace unavailable: {str(e)[:100]})"] + [f"{w}: {t}" for w, t in convo]
     checks = judge(case, lines)
+    if any(c.get("infra") for c in checks):
+        note = note or "judge: no verdict"
     for c in checks:
         if not c.get("true"):
             r["failed"].append("check: " + str(c.get("check")) + " -- " + str(c.get("why"))[:200])
@@ -156,7 +171,9 @@ def run_case(wid, case, style, outdir, tag):
     infra = bool(note) and not r["pass"]
     row = {"id": case["key"], "tag": tag, "pass": r["pass"], "infra": infra, "failed": r["failed"], "call_id": call_id,
            "tools": tools, "note": note}
-    (outdir / f"{case['key']}-{tag}.txt").write_text("\n".join(lines) + "\n\n" + json.dumps(row, indent=1))
+    # A run cut short keeps its own file: the run that replaces it writes the plain name.
+    name = f"{case['key']}-{tag}" + (f"-infra-{time.strftime('%H%M%S')}" if infra else "")
+    (outdir / f"{name}.txt").write_text("\n".join(lines) + "\n\n" + json.dumps(row, indent=1))
     with LOCK:
         print(("PASS" if r["pass"] else "INFRA" if infra else "FAIL"), case["key"], tag, call_id, flush=True)
         for f in r["failed"]:
@@ -183,7 +200,7 @@ def main():
         rows = list(pool.map(lambda j: run_case(a.workflow_id, j[0], a.style, outdir, j[1]), jobs))
         for again in range(a.infra_retries):          # runs a platform error cut short are run again
             redo = [i for i, row in enumerate(rows) if row["infra"]]
-            if not redo:
+            if not redo or LIMIT:
                 break
             time.sleep(60)
             fresh = list(pool.map(lambda i: run_case(a.workflow_id, jobs[i][0], a.style, outdir, jobs[i][1]), redo))
@@ -197,6 +214,8 @@ def main():
     for cid, ps in by.items():
         print(("PASS" if all(ps) else "FAIL"), cid, f"{sum(ps)}/{len(ps)}")
     cut = sum(row["infra"] for row in rows)
+    if LIMIT:
+        print("\nThe claude CLI hit its usage limit: " + LIMIT[0] + ". Runs after it are left out.")
     print(f"\n{sum(all(ps) for ps in by.values())} / {len(by)} cases pass every run"
           + (f" ({cut} runs cut short by platform errors are left out)" if cut else "") + f". Transcripts in {outdir}")
     (outdir / "summary.json").write_text(json.dumps({"workflow_id": a.workflow_id, "rows": rows}, indent=1))
