@@ -51,7 +51,8 @@ class Client:
                 time.sleep(2*attempt)
 
     def _api(self,method,path,body,finalizing,params):
-        timeout=min(30,self.budget.require(1,finalizing=finalizing or self.finalizing))
+        # The gateway answers 504 after 60 s; a client that stops waiting at 30 s loses a request a loaded service still runs.
+        timeout=min(60,self.budget.require(1,finalizing=finalizing or self.finalizing))
         if self.transport:
             return self.transport(method,path,body,params,timeout)
         query="?"+urllib.parse.urlencode(params) if params else ""

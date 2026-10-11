@@ -7,7 +7,7 @@ def test_publish_returns_published_version_and_exports_same_workflow(tmp_path):
     workflow={"nodes":{"start":{}},"initial_node":"start"}
     def transport(method,path,body,params,timeout):
         calls.append((method,path))
-        assert timeout <= 30
+        assert timeout <= 60
         if path=="/api/v2/workflow" and method=="POST":
             return {"workflow":{"id":"w1","agentId":"a1"}}
         if path=="/api/v2/workflow/w1" and method=="GET":
