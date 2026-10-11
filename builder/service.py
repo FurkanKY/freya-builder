@@ -61,9 +61,10 @@ SERVICE_THINKING = """Think briefly, in a few short lines at most: which SCRIPT 
 SPOKEN_START = ("The opening line has already been said. On the caller's first message, start at SCRIPT step 1 and call its tool,"
                 " unless they ask for a person or to pay (HANDOFFS).")
 TOOL_START = ("Your first line, already said, only told the caller you are checking their information. On your next turn,"
-              " whatever starts it (the caller's message or a silence), start at SCRIPT step 1 and call its tool, unless their"
-              " message is one the SCRIPT or HANDOFFS answer at once at any step (a person, to pay, a dispute, another person's card);"
-              " what they asked for is kept for the steps after.")
+              " whatever starts it (the caller's message or a silence), start at SCRIPT step 1 and call its tool: whatever they said"
+              " first, the SCRIPT's reading comes first, unless they ask for a person, to pay, or about another person's card"
+              " (HANDOFFS). Any other request, one you must refuse included, is answered after the reading, where the SCRIPT or RULES"
+              " handle it.")
 ENTRY_PROMPT = ("Say only one short sentence in the call's language telling the caller you are checking their information (the"
                 " documents' own sentence for a wait, if the RULES quote one), without asking them to wait or do anything. Nothing"
                 " else. Do not call, name or write any tool.")
@@ -274,6 +275,55 @@ def _hang_up():
                          "parameters": {"type": "object", "properties": {"message_mode": {"type": "string", "default": "none"}}}}}}
 
 
+RESULTS_HEAD = ("RESULTS SO FAR (the latest result of each tool in this call, kept between turns; copy identifiers such as card"
+                " numbers from here, character for character; a line still showing a {{...}} placeholder has not been called yet):")
+
+
+def result_variable(tool_name):
+    return f"{tool_name}_result"
+
+
+COPY_HINT = ("Copy exactly as an earlier tool result gave it, masked characters included; never fill in, unmask or change a"
+             " character.")
+
+
+def _response_fields(api):
+    """Every field name a response of the contract carries: a request field of the same name is filled from a result."""
+    names = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "properties" and isinstance(value, dict):
+                    names.update(value)
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    for item in (api.get("paths") or {}).values():
+        for op in (item or {}).values():
+            if isinstance(op, dict):
+                walk(op.get("responses"))
+    return names
+
+
+def _mark_copied_fields(tools, fields):
+    """A request field without a description that a result also carries (an identifier such as a masked card number) is
+    told to be copied, not rebuilt: models fill a masked number in with digits of their own."""
+    def walk(props):
+        for name, schema in props.items():
+            if not isinstance(schema, dict):
+                continue
+            if name in fields and schema.get("type") == "string" and not schema.get("description") and "default" not in schema:
+                schema["description"] = COPY_HINT
+            if isinstance(schema.get("properties"), dict):
+                walk(schema["properties"])
+    for tool in tools:
+        body = (((tool.get("function") or {}).get("parameters") or {}).get("properties") or {}).get("body") or {}
+        if isinstance(body.get("properties"), dict):
+            walk(body["properties"])
+
+
 def compile_service(spec, api, briefs):
     api = resolve_refs(api)
     language = language_name(spec.get("language")) or document_language(briefs) or "English"
@@ -285,6 +335,11 @@ def compile_service(spec, api, briefs):
         op = api["paths"][path][method]
         description = " ".join(filter(None, [str(op.get("summary") or "").strip(), _text(hints.get(name))])) or name
         tools.append(api_tool(api, name, tspec, description[:1000], key=(path, method), timeout_ms=TOOL_TIMEOUT_MS))
+    _mark_copied_fields(tools, _response_fields(api))
+    # Seen in chat tests: a tool result from an earlier turn is gone from the model's view, so a card picked a turn later
+    # was sent as a made-up number. Each result is mapped to a variable the task shows on every turn.
+    for tool in tools:
+        tool["response_mapping"] = [{"path": "data", "variable": result_variable(tool["function"]["name"])}]
     code = ("NOW_VARIABLE = " + _py_literal(now) + "\nLANGUAGE = " + _py_literal(language) + "\n"
             + compact_code((SNIPPETS / "service_dates.py").read_text()))
     code = _copy_code(tspec, tools) + code
@@ -302,6 +357,7 @@ def compile_service(spec, api, briefs):
         ("CLOSING:\n" + _text(spec.get("closing"))) if _text(spec.get("closing")) else "",
         ("THIS CALL (given by the phone menu; never ask for these):\n" + "\n".join(f"- {v}: {{{{{v}}}}}" for v in values)) if values else "",
         "DATE FACTS:\n{{date_facts}}",
+        RESULTS_HEAD + "\n" + "\n".join(f"- {t['function']['name']}: {{{{{result_variable(t['function']['name'])}}}}}" for t in tools),
     ]))
     raw = "\n\n".join(f"--- {d['path']} ---\n{d['text']}" for d in briefs)
     fallback = spec.get("fallback") is True

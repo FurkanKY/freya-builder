@@ -204,3 +204,13 @@ def test_the_frame_treats_tool_results_as_data_and_earlier_answers_as_answers():
     assert "four digit words" in SERVICE_FRAME and "never spoken as a gap" in SERVICE_FRAME
     # a lookup a later question needs is put before the figures in the script itself
     assert "before any figures are read" in SERVICE_SCHEMA
+
+
+def test_each_service_result_is_kept_in_a_variable_the_task_shows_on_every_turn():
+    from builder import service
+    wf = service.compile_service(SPEC, _api(), [])
+    serve = wf["nodes"]["serve"]
+    for tool in serve["tools"]:
+        name = tool["function"]["name"]
+        assert tool["response_mapping"] == [{"path": "data", "variable": f"{name}_result"}]
+        assert "{{" + name + "_result}}" in serve["task_message"]
