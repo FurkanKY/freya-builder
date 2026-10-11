@@ -1194,6 +1194,11 @@ def run():
                       "last_business_day_next_week": _label(lbn) if lbn else "the last business day of next week"}
             for step in plan:
                 step = str(step)
+                # "Propose the last business day of this week; if today is that day, the last business day of next week."
+                # Left in words, the phone model had to see that today is that day. On that day both days are next week's.
+                if (lb and lbn and lb == today and "<last_business_day_this_week>" in step and re.search(r"\bif today is\b", step, re.I)
+                        and ("<last_business_day_next_week>" in step or re.search(r"\bnext week", step, re.I))):
+                    step = step.replace("<last_business_day_this_week>", "<last_business_day_next_week>")
                 for k, v in tokens.items():
                     step = step.replace("<" + k + ">", v)
                 # "the 2nd business day after today": <business_day_2>, today never counted.

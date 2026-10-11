@@ -391,6 +391,25 @@ def test_a_plan_step_on_the_nth_business_day():
     assert "attempt 1: 365 by 2026-10-20 (Tuesday, 20 October 2026)" in out, out
 
 
+def test_on_the_last_business_day_of_the_week_the_step_names_next_weeks():
+    # Brief A: "Attempt 1: propose the last business day of this week. If today is that day, propose the last business day of
+    # next week." On a Friday the step names next week's day only; the condition was left to the phone model before.
+    spec = json.loads(json.dumps(SPEC))
+    band = spec["account"]["bands"][0]
+    product = [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "days_late": band["min"], "past_due": 365}]
+    for step in ["attempt 1: propose <amount> by <last_business_day_this_week>; if today is that day, propose <last_business_day_next_week> instead",
+                 "attempt 1: propose <last_business_day_this_week> (or <last_business_day_next_week> if today is that day) for <amount>",
+                 "attempt 1: propose <amount> by <last_business_day_this_week>, or next week's last business day if today is that day"]:
+        band["attempt_plan"] = [step]
+        friday = _facts(spec, product, now="2026-10-16T10:00:00")
+        assert "2026-10-23 (Friday, 23 October 2026)" in friday and "2026-10-16 (Friday" not in friday.split("PERSUASION PLAN")[1], step
+        wednesday = _facts(spec, product, now="2026-10-14T10:00:00")
+        assert "2026-10-16 (Friday, 16 October 2026)" in wednesday.split("PERSUASION PLAN")[1], step
+    # Without the condition the token keeps its own day, also on a Friday.
+    band["attempt_plan"] = ["attempt 1: propose <amount> by <last_business_day_this_week>"]
+    assert "365 by 2026-10-16 (Friday, 16 October 2026)" in _facts(spec, product, now="2026-10-16T10:00:00")
+
+
 def test_the_calendar_stops_after_six_weeks_and_a_later_day_is_still_checked():
     # The code node gets at most 128 KB of code and call data together; a fixed deadline at the year's end would give a
     # calendar line for each of 70 days.
