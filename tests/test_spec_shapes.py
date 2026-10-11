@@ -405,6 +405,9 @@ def test_on_the_last_business_day_of_the_week_the_step_names_next_weeks():
         assert "2026-10-23 (Friday, 23 October 2026)" in friday and "2026-10-16 (Friday" not in friday.split("PERSUASION PLAN")[1], step
         wednesday = _facts(spec, product, now="2026-10-14T10:00:00")
         assert "2026-10-16 (Friday, 16 October 2026)" in wednesday.split("PERSUASION PLAN")[1], step
+        # On another day the alternative names this week's day as well: no second day to take for another proposal.
+        if "<last_business_day_next_week>" in step:
+            assert "2026-10-23" not in wednesday.split("PERSUASION PLAN")[1], step
     # Without the condition the token keeps its own day, also on a Friday.
     band["attempt_plan"] = ["attempt 1: propose <amount> by <last_business_day_this_week>"]
     assert "365 by 2026-10-16 (Friday, 16 October 2026)" in _facts(spec, product, now="2026-10-16T10:00:00")

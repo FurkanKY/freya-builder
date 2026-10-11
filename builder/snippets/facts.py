@@ -1208,6 +1208,11 @@ def run():
                 if (lb and lbn and lb == today and "<last_business_day_this_week>" in step and re.search(r"\bif today is\b", step, re.I)
                         and ("<last_business_day_next_week>" in step or re.search(r"\bnext week", step, re.I))):
                     step = step.replace("<last_business_day_this_week>", "<last_business_day_next_week>")
+                # On any other day the alternative is this week's day too. Seen in a chat call: the model took the day in
+                # "(or <next week's> if today is that day)" for one more proposal on a product the step had closed.
+                elif (lb and lbn and lb != today and "<last_business_day_this_week>" in step and "<last_business_day_next_week>" in step
+                        and re.search(r"\bif today is (?:that|this) day\b", step, re.I)):
+                    step = step.replace("<last_business_day_next_week>", "<last_business_day_this_week>")
                 for k, v in tokens.items():
                     step = step.replace("<" + k + ">", v)
                 # "the 2nd business day after today": <business_day_2>, today never counted.
