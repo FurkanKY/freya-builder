@@ -183,6 +183,10 @@ def normalize_spec(spec, api):
         elif q not in (None, ""):
             questions.append({"field": str(q), "ask": "", "answer_format": ""})
     identity["questions"] = questions
+    limit = str(identity.get("max_wrong_answers") or "").strip().lower()
+    limit = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5"}.get(limit.split(" ")[0], limit)
+    limit = re.search(r"\d+", limit)
+    identity["max_wrong_answers"] = int(limit.group(0)) if limit and int(limit.group(0)) > 0 else None
     spec["identity"] = identity
     calendar = spec.get("calendar") if isinstance(spec.get("calendar"), dict) else {}
     days = weekdays(calendar.get("business_weekdays"))

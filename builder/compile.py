@@ -61,7 +61,7 @@ ANSWER_WRONG = ["false", "0", "incorrect", "wrong", "no_match", "nomatch", "mism
                 "not_verified", "unverified"]
 
 
-def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_value=None):
+def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_value=None, max_wrong=None):
     right = sorted(set(ANSWER_RIGHT) | ({str(answer_value).lower()} if answer_value not in (None, "") else set()))
     lines = [
         "def _get(d, path):",
@@ -93,7 +93,13 @@ def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_va
             f"            elif str(_get(d, {(answer_flag or 'verified')!r})).strip().lower() in {right!r}:",
             "                note = 'This answer is correct. Ask the next security question as the policy says.'",
             f"            elif str(_get(d, {(answer_flag or 'verified')!r})).strip().lower() in {sorted(set(ANSWER_WRONG) - set(right))!r}:",
-            "                note = 'This answer is NOT correct. Apply the policy for a wrong answer; wrong_answers_left shows what remains.'",
+            # The brief's own limit, not the service's: a held-out brief stopped at two wrong answers where the service allowed three.
+            "                note = " + _py_literal(
+                "This answer is NOT correct. The policy ends the security check after %d wrong answers in total, across all the"
+                " questions: count them yourself (a retry the policy does not count, such as one after a hint, is not counted). A"
+                " count of tries left in this response follows the service's own limit and never extends the policy's." % max_wrong
+                if max_wrong else "This answer is NOT correct. Apply the policy for a wrong answer; count the wrong answers as the"
+                " policy says."),
             "            else:",
             "                note = 'The service did not say whether this answer was correct, and identity is not verified yet. If the response shows fewer tries left than before, treat it as wrong; otherwise ask the next security question as the policy says.'",
             "            if d.get('hint'):",
@@ -247,7 +253,8 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
     tool_obj = {"type": "function", "config": {"timeoutMs": 12000, "maxRetries": max_retries}, "function": function,
-                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"), identity.get("answer_value"))}
+                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"), identity.get("answer_value"),
+                                               identity.get("max_wrong_answers"))}
     if tool == "close_call":
         # A reason the API requires is kept for every outcome; only an empty value or a placeholder is removed then.
         silent = [] if "reason" in schema.get("required", []) else [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]

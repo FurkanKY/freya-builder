@@ -347,3 +347,14 @@ def test_an_opening_sentence_given_word_for_word_is_kept_unchanged():
     for path in ("vendor/kit-v3/briefs/brief-a.md", "vendor/kit-v3/briefs/brief-b.md", "tests/fixtures/geny/brief-y.md"):
         assert opening_issues({"opening_line": "Hello."}, [{"path": path, "text": (ROOT/path).read_text()}]) == [] or "brief-y" in path
     assert opening_issues({"opening_line": "Hi."}, [{"path": "x", "text": 'Open with exactly: "Hello <first name>, this is Acme."'}]) == []
+
+
+def test_the_wrong_answer_note_states_the_briefs_own_limit():
+    # Held-out briefs stop the check after two wrong answers where the service allows three; the note named one API's field.
+    for limit, said in ((2, "after 2 wrong answers"), ("two", "after 2 wrong answers"), (None, "count the wrong answers as the policy says")):
+        spec = json.loads(json.dumps(SPEC))
+        spec["identity"]["max_wrong_answers"] = limit
+        wf = compile_workflow(spec, API, [])
+        hook = tool(wf, "identify", "verify_identity")["post_process_code"]
+        note = run_hook(hook, {"ok": True, "verified": False, "all_verified": False, "wrong_answers_left": 1})
+        assert said in note and "wrong_answers_left" not in note, note
