@@ -257,10 +257,14 @@ def compile_workflow(spec, api, briefs):
 
     questions = "\n".join(f"- {q.get('field')}: {q.get('ask')} (send as: {q.get('answer_format')})" for q in identity.get("questions", []))
     # Seen live: with no value of its own in the prompt, the agent asked every customer for the brief's example name.
-    this_call = [v for v in spec.get("call_variables") or [] if v != spec.get("now_variable")]
+    # Only the person's name and what the opening or the identity policy speaks as a template: an amount passed as a call
+    # variable must not be in reach before identity is verified.
+    spoken = str(policy.get("before_verification") or "") + " " + str(spec.get("opening_line") or "")
+    this_call = [v for v in spec.get("call_variables") or [] if v != spec.get("now_variable") and
+                 (re.search(r"name|title|salutation|honorific|surname", v, re.I) or "{{" + v + "}}" in spoken)]
     identify_task = "\n\n".join(filter(None, [
         "PHASE: before identity verification. The account is not visible yet and must not be discussed.",
-        ("THIS CALL (the values of this call's variables; names and values in the policy documents are only examples):\n"
+        ("THIS CALL (who this call is for; names in the policy documents are only examples):\n"
          + "\n".join(f"- {v}: {{{{{v}}}}}" for v in this_call)) if this_call else "",
         policy.get("before_verification"),
         "Security questions, in order (verify_identity field value: question):\n" + questions if questions else "",

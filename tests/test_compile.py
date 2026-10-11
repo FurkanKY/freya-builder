@@ -49,9 +49,11 @@ def test_the_identity_phase_sees_this_calls_values():
     spec["policy"]["before_verification"] = "Ask 'Am I speaking with {title} {last_name}?', or for <first_name>; offer {floor} never."
     task = compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["task_message"]
     assert "Ask 'Am I speaking with {{title}} {{last_name}}?', or for {{first_name}}; offer {floor} never." in task
-    names = [v for v in spec["call_variables"] if v != spec["now_variable"]]
-    assert names and all(f"- {v}: {{{{{v}}}}}" in task for v in names)
-    assert f"- {spec['now_variable']}:" not in task
+    assert all(f"- {v}: {{{{{v}}}}}" in task for v in ("first_name", "last_name", "title"))
+    assert f"- {spec['now_variable']}:" not in task and "- customer_id:" not in task
+    # A call variable such as an amount stays out of the identity phase.
+    spec["call_variables"] = spec["call_variables"] + ["amount_due"]
+    assert "- amount_due:" not in compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["task_message"]
 
 
 def test_close_call_drops_reason_for_reasonless_outcomes():
