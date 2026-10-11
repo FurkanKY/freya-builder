@@ -174,3 +174,13 @@ def test_generate_service_falls_back_to_the_documents_when_no_read_is_usable(tmp
         wf = out["workflow"]
         assert validate_workflow(wf, inputs["api"]) == [] and wf["nodes"]["serve"]["on_enter"]["type"] == "llm"
         assert "Pick the card by cardId." in wf["system_prompt"]
+
+
+def test_an_opening_with_unfilled_slots_is_not_spoken_as_is_and_the_agent_starts_at_the_first_script_step():
+    from builder.service import TOOL_START, spoken_opening
+    variables = ["customerNumber", "now"]
+    assert spoken_opening("Hello, this is the bank.", variables) == "Hello, this is the bank."
+    assert spoken_opening("Hello {{customerNumber}}.", variables) == "Hello {{customerNumber}}."
+    for line in ["Your card ending <last4> owes …", "Which card? For example [card name].", "Total {amount}.", "Hello {{name}}."]:
+        assert spoken_opening(line, variables) == ""
+    assert TOOL_START.startswith("The call starts with you")

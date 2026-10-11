@@ -43,7 +43,7 @@ Rules:
 
 # Generic inbound-service mechanics; the bank's script and rules follow it in the task.
 SERVICE_FRAME = """You are the bank's phone assistant on an inbound call. The phone menu has already identified the caller: never ask for what THIS CALL gives.
-The opening line has already been said. On the caller's first message, start at SCRIPT step 1 and call its tool, unless they ask for a person or to pay (HANDOFFS).
+{start}
 Keep turns short and ask one question at a time, but say each quoted SCRIPT sentence in full, and give the figures one SCRIPT step reads in one turn before asking that step's question. Never stop in the middle of a step to wait for a reply the SCRIPT does not ask for.
 Follow the SCRIPT in order and take its branches exactly; the RULES apply throughout. Never invent figures, dates, cards, fees, addresses or reasons: each comes from a tool result, THIS CALL, DATE FACTS or the RULES. Before you say any amount, date, card detail or address, the tool the SCRIPT names for it must have returned it in this call for the card being discussed; when the caller picks another card, call that card's tools again before saying anything about it.
 Tool use: when the script says to call a tool, CALL it; saying you did is not enough. Call at most one tool per message. After every tool result, speak to the caller (or call the next tool the script names); never end a turn with nothing. Never say an action was done unless its tool succeeded.
@@ -55,6 +55,25 @@ You serve only THIS CALL's customer and the cards the tools return for them. Nev
 
 # With reasoning on, the phone model thinks past its budget and says nothing unless told to keep it short.
 SERVICE_THINKING = """Think briefly, in a few short lines at most: which SCRIPT step you are on and what to say or call. Do not restate the script. Then always give the reply."""
+
+SPOKEN_START = ("The opening line has already been said. On the caller's first message, start at SCRIPT step 1 and call its tool,"
+                " unless they ask for a person or to pay (HANDOFFS).")
+TOOL_START = ("The call starts with you, at SCRIPT step 1: your first message calls its tool with what THIS CALL gives, then says"
+              " what the SCRIPT says for that result. No greeting of your own; the SCRIPT's sentences are the first words.")
+ENTRY_PROMPT = ("Begin the call now at SCRIPT step 1: call its tool first (THIS CALL gives its values), then say exactly what the"
+                " SCRIPT says for the result.")
+
+
+def spoken_opening(line, variables):
+    """The opening line when it can be spoken as it is: every slot filled by a call variable. A template the reader copied
+    (<card name>, [kart adı], {x}, an unknown {{x}}, a trailing ellipsis) would be read aloud literally, so it gives ''."""
+    line = str(line or "").strip()
+    if re.search(r"<[^<>]+>|\[[^\[\]]+\]|(?<!\{)\{[^{}]+\}(?!\})|\u2026|\.\.\.\s*$", line):
+        return ""
+    if any(v not in variables for v in re.findall(r"\{\{\s*(\w+)\s*\}\}", line)):
+        return ""
+    return line
+
 
 SERVICE_END = ("End the call. Call it in the same message as the closing words, or right after the words the HANDOFFS say for a"
                " hand-off, once nothing more is to be said or done.")
@@ -272,8 +291,9 @@ def compile_service(spec, api, briefs):
     if len(code) > CODE_BUDGET:
         raise ValueError(f"prepare code is {len(code)} bytes, over the {CODE_BUDGET} budget")
     values = [v for v in tspec["call_variables"] if v != now]
+    opening = spoken_opening(_text(spec.get("opening_line")), tspec["call_variables"])
     task = "\n\n".join(filter(None, [
-        SERVICE_FRAME,
+        SERVICE_FRAME.replace("{start}", SPOKEN_START if opening else TOOL_START),
         SERVICE_THINKING if NEGOTIATE_REASONING == "enabled" else "",
         "SCRIPT:\n" + _text(spec.get("script")),
         ("RULES:\n" + _text(spec.get("rules"))) if _text(spec.get("rules")) else "",
@@ -297,11 +317,9 @@ def compile_service(spec, api, briefs):
         # Without a read the documents are all the agent has, whatever their size.
         ("BANK DOCUMENTS (verbatim, in the order given):\n" + raw) if raw and (fallback or len(raw) < VERBATIM_LIMIT) else "",
     ]))
-    opening = _text(spec.get("opening_line"))
     serve = {
         "name": "serve", "node_type": "conversation",
-        "on_enter": {"type": "tts", "text": opening} if opening else
-                    {"type": "llm", "prompt": "Say the bank's opening line for this call as its documents give it, and nothing else."},
+        "on_enter": {"type": "tts", "text": opening} if opening else {"type": "llm", "prompt": ENTRY_PROMPT},
         "on_enter_first_entry_only": True, "task_message": task, "tools": tools,
         # As on the collection path: with reasoning on, the phone model thought past its budget and said nothing.
         "reasoning_override": NEGOTIATE_REASONING,
