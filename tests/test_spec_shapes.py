@@ -405,3 +405,22 @@ def test_the_calendar_stops_after_six_weeks_and_a_later_day_is_still_checked():
     calendar = variables["date_facts"].split("Calendar, one line per day from today.")[1]
     assert "\n2026-12-05 " in calendar and "\n2026-12-06 " not in calendar
     assert "2026-12-15" in variables["named_day_facts"] and "business day" in variables["named_day_facts"], variables["named_day_facts"]
+
+
+def test_a_failed_service_call_is_no_wrong_answer_and_a_failed_account_load_is_said():
+    wf = compile_workflow(json.loads(json.dumps(SPEC)), API, BRIEFS)
+    hook = tool(wf, "identify", "verify_identity")["post_process_code"]
+    result = {"status": "error", "status_code": 500, "message": "Request failed with status 500", "data": None}
+    exec(hook, {"result": result})
+    note = result["data"]["what_to_do_next"]
+    assert "FAILED" in note and "not counted as a wrong answer" in note and "same field and answer" in note, note
+    # A refused answer (ok false, HTTP 200) is still the service's own judgement.
+    assert "Ask the customer again" in run_hook(hook, {"ok": False, "error": "unknown field"})
+    assert wf["nodes"]["load_account"]["pre_actions"][0]["config"]["maxRetries"] == 1
+    code = wf["nodes"]["account_facts"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    variables = {"now": "2026-10-21T09:00", "load_account_response.status_code": 500, "load_account_response.status": "error"}
+    exec(compile(code, "facts", "exec"), {"vars": variables})
+    assert variables["account_facts"].startswith("get_account FAILED (500") and variables["facts_state"] == "load_failed"
+    variables = {"now": "2026-10-21T09:00"}
+    exec(compile(code, "facts", "exec"), {"vars": variables})
+    assert variables["facts_state"] == "no_products"

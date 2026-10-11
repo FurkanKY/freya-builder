@@ -180,6 +180,11 @@ def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_va
             "                note = 'The service did not say whether this answer was correct, and identity is not verified yet. If the response shows fewer tries left than before, treat it as wrong; otherwise ask the next security question as the policy says.'",
             "            if d.get('hint'):",
             "                note = note + ' The service returned hint ' + str(d.get('hint')) + '; apply the policy rule for it.'",
+            # A failed request (the bank's 5xx) checked nothing: it is no wrong answer, and the same answer can be sent again.
+            "        elif failed:",
+            "            note = 'verify_identity FAILED (' + str(d.get('error') or 'service error')[:120] + '): the service did not check"
+            " this answer, so it is neither right nor wrong and is not counted as a wrong answer. Apply the policy for a failed tool;"
+            " where it says nothing, call verify_identity once more with the same field and answer, without asking the customer again.'",
             "        else:",
             "            note = 'The service could not use this answer (ok false: ' + str(d.get('error') or 'no reason') + '). Ask the customer again; apply the policy.'",
         ]
@@ -433,7 +438,8 @@ def compile_workflow(spec, api, briefs):
     pre_tools = [t for t in ("verify_identity", "schedule_callback", "transfer_to_agent", "close_call")]
     post_tools = [t for t in ("create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call")]
     _, get_op = operation(api, "get_account")
-    get_account = api_tool(api, "get_account", spec, model_filled=False, max_retries=2)
+    # One retry: "if it fails, try once more" is the usual rule, and a third call would show in the bank's record.
+    get_account = api_tool(api, "get_account", spec, model_filled=False, max_retries=1)
     get_account.pop("post_process_code")
     list_field = (spec.get("account") or {}).get("list_field") or "products"
 

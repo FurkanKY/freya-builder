@@ -1355,9 +1355,28 @@ def run():
         vars["account_facts"] = "Late products, in the order the bank returned them:\n" + "\n".join(rows)
         vars["product_count"] = str(count)
         vars["facts_state"] = "ready"
+    elif _load_failure():
+        vars["account_facts"] = ("get_account FAILED (" + _load_failure() + "): the bank's service did not return the account, after one"
+                                 " retry. Nothing about the account is known: name no amount, product or date. Apply the policy for a"
+                                 " failed tool; where it says nothing, tell the customer the account cannot be reached right now and"
+                                 " close the call with the outcome and reason the policy gives for a service error.")
+        vars["facts_state"] = "load_failed"
     else:
         vars["account_facts"] = "The product list could not be read by code. Use the get_account result in the conversation history."
         vars["facts_state"] = "no_products"
+
+
+def _load_failure():
+    """Why the account load failed, from the load node's response; empty when nothing says it failed."""
+    status = str(vars.get("load_account_response.status") or "success").lower()
+    try:
+        code = int(vars.get("load_account_response.status_code") or 0)
+    except Exception:
+        code = 0
+    error = vars.get("load_account_response.error") or vars.get("load_account_response.data.error")
+    if code >= 400 or status != "success" or error not in (None, "", "None"):
+        return (", ".join(str(x) for x in (code or None, error or vars.get("load_account_response.message")) if x not in (None, "")) or "request failed")[:160]
+    return ""
 
 
 try:
