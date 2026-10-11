@@ -145,12 +145,18 @@ def _norm(name):
     return re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")
 
 
+def _tail(path):
+    """The last path segment that is not a path parameter: /get_account/{customer_id} -> get_account."""
+    parts = [x for x in path.strip("/").split("/") if x and not x.startswith("{")]
+    return parts[-1] if parts else ""
+
+
 def _find(api, tool):
     """The (path, method) of a tool: by path tail, then operationId, then a normalised path tail (get-account)."""
     paths = api["paths"]
-    for test in (lambda p, m, op: p.strip("/").split("/")[-1] == tool,
+    for test in (lambda p, m, op: _tail(p) == tool,
                  lambda p, m, op: _norm(op.get("operationId")) == tool,
-                 lambda p, m, op: _norm(p.strip("/").split("/")[-1]) == tool):
+                 lambda p, m, op: _norm(_tail(p)) == tool):
         for path, item in paths.items():
             for method in HTTP_METHODS:
                 if isinstance(item.get(method), dict) and test(path, method, item[method]):
@@ -174,6 +180,16 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     schema = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
     hints = (spec.get("tool_field_hints") or {}).get(tool, {})
     call_vars = set(spec.get("call_variables") or []) | {"customer_id"}
+    # Path parameters and call-variable query parameters go into the URL, where {{var}} is resolved like a body default.
+    path_item = api["paths"].get(_find(api, tool)[0]) or {}
+    for param in list(path_item.get("parameters") or []) + list(op.get("parameters") or []):
+        name = param.get("name") if isinstance(param, dict) else None
+        if not name:
+            continue
+        if param.get("in") == "path":
+            url = url.replace("{" + name + "}", "{{" + name + "}}")
+        elif param.get("in") == "query" and name in call_vars and "{{" + name + "}}" not in url:
+            url += ("&" if "?" in url else "?") + name + "={{" + name + "}}"
     reserved = RESERVED | call_vars
     body = {}
     for field, prop in schema.get("properties", {}).items():

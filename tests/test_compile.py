@@ -151,6 +151,24 @@ def test_tool_keys_given_as_api_paths_still_reach_the_tools():
     assert tool["function"]["parameters"]["properties"]["body"]["properties"]["date"]["description"].startswith("a business day")
 
 
+def test_path_and_query_parameters_go_into_the_url():
+    api = json.loads(json.dumps(API))
+    paths = api["paths"]
+    get = paths.pop("/get_account")["post"]
+    get.pop("requestBody", None)
+    get["parameters"] = [{"name": "customer_id", "in": "path", "required": True, "schema": {"type": "string"}}]
+    paths["/get_account/{customer_id}"] = {"get": get}
+    close = paths["/close_call"]["post"]
+    close["parameters"] = [{"name": "customer_id", "in": "query", "schema": {"type": "string"}}]
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    assert validate_spec(SPEC, api) == []
+    assert validate_workflow(wf.get("workflow", wf), api) == []
+    fn = wf["nodes"]["load_account"]["pre_actions"][0]["function"]["parameters"]["properties"]
+    assert fn["url"]["default"].endswith("/get_account/{{customer_id}}") and fn["method"]["default"] == "GET"
+    tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "close_call")
+    assert tool["function"]["parameters"]["properties"]["url"]["default"].endswith("/close_call?customer_id={{customer_id}}")
+
+
 def test_spec_accepts_a_nested_product_list():
     api = json.loads(json.dumps(API))
     _, op = next((path, item.get("post")) for path, item in api["paths"].items() if path.endswith("get_account"))

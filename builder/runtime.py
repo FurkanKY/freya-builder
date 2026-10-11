@@ -2,6 +2,7 @@
 import ast
 import hashlib
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,11 +125,13 @@ def validate_workflow(workflow, api):
         params = function.get("parameters", {}).get("properties", {})
         if handler == "__function__:api_call":
             url = params.get("url", {}).get("default")
-            if url not in allowed_urls:
+            # A path parameter is filled as {{name}} and a call-variable query parameter is appended (compile.api_tool).
+            key = re.sub(r"\{\{(\w+)\}\}", r"{\1}", url.split("?")[0]) if isinstance(url, str) else url
+            if key not in allowed_urls:
                 issues.append(f"{location}: HTTP URL is not in supplied OpenAPI: {url}")
             else:
                 method = str(params.get("method", {}).get("default", "POST")).lower()
-                operation = allowed_urls[url].get(method)
+                operation = allowed_urls[key].get(method)
                 if operation is None:
                     issues.append(f"{location}: HTTP method is not in OpenAPI")
                 else:
