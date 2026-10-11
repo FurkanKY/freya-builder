@@ -188,10 +188,10 @@ def _parse_products(spec):
                 except Exception:
                     value = None
         if isinstance(value, list) and value and all(isinstance(p, dict) for p in value):
-            return value
+            return [_flat_product(p) for p in value]
     # Flattened keys such as load_account_response.data.products.0.past_due; one source only, the fullest.
     sources = dict()
-    pattern = re.compile(r"^(account_products|\w+_response\.data\." + re.escape(field) + r")[.\[](\d+)\]?\.(\w+)$")
+    pattern = re.compile(r"^(account_products|\w+_response\.data\." + re.escape(field) + r")[.\[](\d+)\]?\.([\w.]+)$")
     for key in list(vars.keys()):
         m = pattern.search(str(key))
         if m:
@@ -202,9 +202,35 @@ def _parse_products(spec):
     return [best[i] for i in sorted(best)]
 
 
+def _flat_product(product):
+    """A product with nested objects (balance: {past_due: ...}) also gets dotted keys (balance.past_due), as the spec names them."""
+    out = dict(product)
+    def walk(obj, prefix):
+        for key, value in obj.items():
+            path = prefix + "." + str(key) if prefix else str(key)
+            if isinstance(value, dict):
+                walk(value, path)
+            elif prefix:
+                out.setdefault(path, value)
+    walk(product, "")
+    return out
+
+
 def _num(value):
     try:
         return float(value)
+    except Exception:
+        pass
+    if isinstance(value, bool) or not isinstance(value, str):
+        return None
+    # An amount the API gives as text: "EUR 1,234.50", "510.00 €", "1.234,50".
+    text = re.sub(r"^[A-Za-z\u20ac$\u00a3\u00a5\u20ba\s]+|[A-Za-z\u20ac$\u00a3\u00a5\u20ba\s]+$", "", value)
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+,\d{1,2}|\d+,\d{1,2}", text):
+        text = text.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d+)?", text):
+        text = text.replace(",", "")
+    try:
+        return float(text)
     except Exception:
         return None
 
@@ -223,7 +249,7 @@ def _floor_of(product, rule, amount_field):
         if len(values) < 2 or None in values:
             return text, None
         return text, (max(values) if m.group(1).lower() == "max" else min(values))
-    m = re.match(r"^(\d+(?:\.\d+)?)\s*%(?:\s*of\s*(\w+))?$", text)
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*%(?:\s*of\s*([\w.]+))?$", text)
     if m:
         base = _num(product.get(m.group(2) or amount_field))
         if base is None:

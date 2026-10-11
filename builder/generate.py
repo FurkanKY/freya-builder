@@ -43,7 +43,7 @@ SCHEMA = """Return exactly this shape:
                "earliest_promise_day": "<today, or tomorrow only when the brief says a promise date may not be today>"},
   "account": {
     "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
-    "amount_field": "<field with the amount owed now>", "segment_field": "<product field that selects the band, e.g. days late>",
+    "amount_field": "<field with the amount owed now; dotted path if nested>", "segment_field": "<product field that selects the band, e.g. days late>",
     "floor_field_by_type": {"<product type>": "<the minimum acceptable amount as the brief states it: a product field name, 'N%' of the amount owed, 'N% of <field>', or a fixed number; when the brief takes the larger or the smaller of two such amounts, 'max(<a>, <b>)' or 'min(<a>, <b>)'>"},
     "spoken_name_by_type": {"<product type>": "<how to name it aloud, the name only: the product kind plus an identifying product field if the API has one (e.g. last digits), inserted as <field_name>; never an amount or other values>"},
     "bands": [{"name": "...", "min": <number>, "max": <number>,
@@ -176,20 +176,30 @@ def validate_spec(spec, api):
             items = props.get(part, {}) if isinstance(props, dict) else {}
             props = items.get("properties", {})
         fields = items.get("items", {}).get("properties", {})
+        # A product field may be a dotted path into a nested object (balance.past_due).
+        def product_field(name):
+            node, props = {}, fields
+            for part in str(name or "").split("."):
+                node = props.get(part) if isinstance(props, dict) else None
+                if not isinstance(node, dict):
+                    return None
+                props = node.get("properties", {})
+            return node
         if not items:
             issues.append(f"account.list_field {acc.get('list_field')} is not in get_account response")
         for key in ("id_field", "type_field", "amount_field", "segment_field"):
-            if fields and acc.get(key) not in fields:
+            if fields and product_field(acc.get(key)) is None:
                 issues.append(f"account.{key} {acc.get(key)} is not a product field")
-        kinds = fields.get(acc.get("type_field"), {}).get("enum") if fields else None
+        kinds = (product_field(acc.get("type_field")) or {}).get("enum") if fields else None
         def floor_ok(field):
             pair = re.match(r"^\s*(max|min)\s*\((.+)\)\s*$", str(field), re.I)
             if pair:
                 parts = pair.group(2).split(",")
                 return len(parts) >= 2 and all(floor_ok(part.strip()) for part in parts)
-            percent = re.match(r"^\s*\d+(?:\.\d+)?\s*%(?:\s*of\s*(\w+))?\s*$", str(field))
+            percent = re.match(r"^\s*\d+(?:\.\d+)?\s*%(?:\s*of\s*([\w.]+))?\s*$", str(field))
             fixed = isinstance(field, (int, float)) or re.match(r"^\s*\d+(?:\.\d+)?\s*$", str(field))
-            return not fields or bool(fixed) or (bool(percent) and (not percent.group(1) or percent.group(1) in fields)) or (not percent and field in fields)
+            return (not fields or bool(fixed) or (bool(percent) and (not percent.group(1) or product_field(percent.group(1)) is not None))
+                    or (not percent and product_field(field) is not None))
         for kind, field in (acc.get("floor_field_by_type") or {}).items():
             if not floor_ok(field):
                 issues.append(f"floor {field} for {kind} is not a product field, 'N%', 'N% of <product field>', a number,"

@@ -296,3 +296,24 @@ def test_the_call_key_the_clock_and_fixed_api_values_in_tool_bodies():
     promise = tool(wf, "negotiate", "create_promise")["function"]["parameters"]["properties"]["body"]
     assert set(promise["properties"]) == set(whole["properties"])
     assert validate_workflow(wf, api) == []
+
+
+def test_product_fields_in_a_nested_object_and_amounts_given_as_text():
+    api = json.loads(json.dumps(API))
+    items = api["paths"]["/get_account"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]["products"]["items"]
+    flat = items["properties"]
+    items["properties"] = {"product_id": flat["product_id"], "type": flat["type"], "card": {"type": "object", "properties": {"last4": flat["card_last4"]}},
+                           "balance": {"type": "object", "properties": {k: flat[k] for k in ("past_due", "minimum_payment", "instalment_amount")}},
+                           "days_late": flat["days_late"]}
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"].update({"amount_field": "balance.past_due", "floor_field_by_type": {"credit_card": "max(balance.minimum_payment, 5% of balance.past_due)"},
+                            "spoken_name_by_type": {"credit_card": "credit card ending <card.last4>"}})
+    assert validate_spec(spec, api) == []
+    spec["account"]["amount_field"] = "balance.nonsense"
+    assert any("amount_field" in i for i in validate_spec(spec, api))
+    spec["account"]["amount_field"] = "balance.past_due"
+    product = {"product_id": "p1", "type": "credit_card", "card": {"last4": "1234"}, "days_late": 4,
+               "balance": {"past_due": "EUR 2,125.10", "minimum_payment": "90.00 €"}}
+    out = _facts(spec, [product])
+    assert "credit card ending 1234" in out and "2125.1" in out
+    assert "floor (max(balance.minimum_payment, 5% of balance.past_due)) 106.26" in out

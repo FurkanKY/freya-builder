@@ -116,7 +116,11 @@ def _product_types(api, list_field, type_field):
         for part in str(list_field or "").split("."):
             items = props.get(part, {})
             props = items.get("properties", {})
-        return [str(t) for t in items.get("items", {}).get("properties", {}).get(type_field, {}).get("enum", [])]
+        node, props = {}, items.get("items", {}).get("properties", {})
+        for part in str(type_field or "").split("."):
+            node = props.get(part, {}) if isinstance(props, dict) else {}
+            props = node.get("properties", {})
+        return [str(t) for t in node.get("enum", [])]
     except Exception:
         return []
 
