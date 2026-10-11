@@ -1,0 +1,17 @@
+name = "freya-bank-mock"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+
+# Keeps each request's console line in the dashboard (Workers Logs), across isolates.
+[observability]
+enabled = true
+
+# One Durable Object holds the mock's state and request log (src/worker.js, MockState "main"),
+# so every request sees the same state. SQLite-backed: allowed on the Workers Free plan.
+[[durable_objects.bindings]]
+name = "MOCK"
+class_name = "MockState"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MockState"]
