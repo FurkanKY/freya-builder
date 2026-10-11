@@ -441,7 +441,7 @@ def _ids(raw, infos):
     return [] if _no_value(raw) else _refused_ids(raw, infos)
 
 
-def _count_refusals(plans, day_named=False, named_date=None, today_iso=None):
+def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, recorded=None):
     """Counts, per product, the refused proposals the assistant actually made, then clears the extracted words.
 
     The first ask covers every product once: a product refused in answer to it gets count 1, never more. After that a
@@ -465,14 +465,35 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None):
     infos = [(pl[0], pl[4]) for pl in plans]
     all_ids = [pl[0] for pl in plans]
     k_of = lambda pid: int(counts.get(pid) or 0)
+    recorded = recorded or dict()
+    done = lambda pid: bool(set(recorded.get(pid) or []) & set(["add_note", "create_promise"]))
+    try:
+        agreed = json.loads(str(vars.get("agreed_products") or "{}"))
+        agreed = agreed if isinstance(agreed, dict) else dict()
+    except Exception:
+        agreed = dict()
     # The first ask is open while no product has a count or a day or amount of the customer's own.
     first_open = not any(k_of(pid) for pid in all_ids) and not own
-    for pid in _ids(str(vars.get("dated_products") or ""), infos):
-        if k_of(pid) == 0 and pid not in own:
-            own.append(pid)
+    closed = str(vars.get("first_ask_closed") or "") == "yes"
     raw = str(vars.get("refused_products") or "").strip()
     asked = _ids(str(vars.get("proposed_products") or ""), infos)
     dated_now = _ids(str(vars.get("dated_products") or ""), infos)
+    accepted = [] if asked_back and first_open else _ids(str(vars.get("accepted_products") or ""), infos)
+    # An acceptance is for the proposal the assistant made. Seen in a review: 'all', 'everything' or 'the loan' agreed products
+    # whose proposal was never made. Without a proposed product, only the first product with a proposal open, in bank order.
+    if asked:
+        accepted = [pid for pid in accepted if pid in asked]
+    elif len(accepted) > 1 and not first_open:
+        open_now = [pid for pid in all_ids if pid in accepted and pid not in agreed and not done(pid)
+                    and (0 < k_of(pid) <= _total(plans[all_ids.index(pid)]) or (k_of(pid) == 0 and pid not in own))]
+        accepted = open_now[:1]
+    accepted = [pid for pid in accepted if not done(pid)]
+    # A yes to attempt 1 of a product the first ask already covered is that attempt accepted, not a day of the customer's own.
+    late_yes = [pid for pid in accepted if k_of(pid) == 0 and pid not in own and (not first_open or closed)
+                and not (asked and set(asked) == set(all_ids))]
+    for pid in dated_now:
+        if k_of(pid) == 0 and pid not in own and pid not in late_yes and not done(pid):
+            own.append(pid)
     changed = []
     fresh = []
     refused_now = []
@@ -487,7 +508,7 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None):
     if not _no_value(raw):
         ids = _refused_ids(raw, infos)
         if not ids and _bare_no(raw):
-            open_ids = [pl[0] for pl in plans if 0 < k_of(pl[0]) <= _total(pl)]
+            open_ids = [pl[0] for pl in plans if 0 < k_of(pl[0]) <= _total(pl) and pl[0] not in agreed]
             ids = asked or (open_ids if len(open_ids) == 1 else [])
         first_ask = first_open and (not asked or set(asked) == set(all_ids))
         if first_ask and dated_now and set(ids) - set(dated_now):
@@ -504,7 +525,7 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None):
                         days_of.setdefault(pid, named_date)
         if not first_ask and not asked and len(ids) > 1:
             # Not known what was proposed: a group refusal counts only for the product being worked on, in bank order.
-            working = [pid for pid in all_ids if pid in ids and 0 < k_of(pid) <= _total(plans[all_ids.index(pid)])]
+            working = [pid for pid in all_ids if pid in ids and pid not in agreed and 0 < k_of(pid) <= _total(plans[all_ids.index(pid)])]
             # Products never counted and never offered by the customer are refusing the first ask, asked again for them.
             # Seen live: "I can pay the card tomorrow", then "can you pay the loans today?", "no": nothing was counted.
             fresh = [pid for pid in all_ids if pid in ids and k_of(pid) == 0 and pid not in own]
@@ -533,28 +554,25 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None):
                 changed.append(pid)
     # "Why do you need all of them today?" right after the first ask: no answer, so nothing is counted; seen in a chat run,
     # the model then asked about today again. The plan names attempt 1 instead, and remembers that the first ask is closed.
-    closed = str(vars.get("first_ask_closed") or "") == "yes"
     offered_day = day_named and not (named_date and named_date == today_iso)
     question = (asked_back and first_open and not closed and bool(asked) and set(asked) == set(all_ids) and not changed
                 and not dated_now and not own and not offered_day)
     if question:
         vars["first_ask_closed"] = "yes"
     # A product whose proposal the customer accepted is agreed: seen in a review, a card that accepted its attempt 1 stayed
-    # pending, was proposed again once the loan was done and held the car loan back. A later refusal takes it back.
-    try:
-        agreed = json.loads(str(vars.get("agreed_products") or "{}"))
-        agreed = agreed if isinstance(agreed, dict) else dict()
-    except Exception:
-        agreed = dict()
-    for pid in refused_now:
+    # pending, was proposed again once the loan was done and held the car loan back. Only a refusal counted for it takes it
+    # back; a group refusal while another product is proposed does not.
+    for pid in changed:
         if pid in agreed:
             agreed.pop(pid, None)
             days_of.pop(pid, None)
-    accepted = _ids(str(vars.get("accepted_products") or ""), infos)
     for pid in accepted + [pid for pid in dated_now if k_of(pid) > 0]:
-        if pid in refused_now:
+        if pid in refused_now or done(pid):
             continue
-        if k_of(pid) == 0 and pid not in own:
+        if pid in late_yes:
+            counts[pid] = 1
+            agreed[pid] = 1
+        elif k_of(pid) == 0 and pid not in own:
             own.append(pid)
             if named_date:
                 days_of.setdefault(pid, named_date)
@@ -718,7 +736,7 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
     if now and pending:
         named = pending_ids[0]
         now.append(propose + pending[0] + "." + waits)
-    elif stopped and not pending and not unasked:
+    elif (stopped or accepted_now) and not pending and not unasked:
         now.append(_closing_step(offered, details))
     elif question and first_open:
         named = first_open[0]
@@ -796,14 +814,14 @@ def _wrap_up(plans, counts, own, owed=None, details=None, recorded=None, agreed=
             offered.append(pid + " " + label)
             lines.append(pid + " " + label + (owed or dict()).get(pid, "") + ": the customer offered a day or an amount for it. Settle it under the date and amount rules,"
                          " read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
-        elif pid in agreed and pid in own and k <= _total((pid, label, steps, allowed)):
-            offered.append(pid + " " + label)
-            lines.append(pid + " " + label + (owed or dict()).get(pid, "") + ": the customer accepted the proposal named in the NEXT STEP for it."
-                         " Read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
         elif "add_note" in (recorded.get(pid) or []) and not k > _total((pid, label, steps, allowed)):
             stopped += 1 if k else 0
             lines.append(pid + " " + label + ": its note is already written in this call (add_note succeeded): propose nothing for it"
                          " and do not write its note again.")
+        elif pid in agreed and pid in own and k <= _total((pid, label, steps, allowed)):
+            offered.append(pid + " " + label)
+            lines.append(pid + " " + label + (owed or dict()).get(pid, "") + ": the customer accepted the proposal named in the NEXT STEP for it."
+                         " Read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
         elif k > _total((pid, label, steps, allowed)):
             stopped += 1
             lines.append(pid + " " + label + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date"
@@ -978,7 +996,7 @@ def run():
     day_named = bool(resolved) or (given and bool(_tokens(day_words) & VAGUE_DAY))
     named_date = resolved[0].isoformat() if len(resolved) == 1 else None
     count = len(rows)
-    counts, changed, dated_now, question, accepted_now = _count_refusals(plans, day_named, named_date, today.isoformat())
+    counts, changed, dated_now, question, accepted_now = _count_refusals(plans, day_named, named_date, today.isoformat(), recorded)
     first_closed = str(vars.get("first_ask_closed") or "") == "yes"
     # "I can't pay today" answers the first ask: today is not a day of the customer's own that is checked first.
     day_offered = day_named and named_date != today.isoformat()
@@ -1017,8 +1035,9 @@ def run():
         if pid in agreed:
             # An accepted proposal is read back as proposed, with the day the customer gave instead when they gave one.
             step = int(agreed.get(pid) or 0)
-            text = ("the amount" + ("" if iso else " and the day") + " of the proposal the customer accepted (attempt " + str(step) + ": "
-                    + (_s[step - 1] if _s and 0 < step <= len(_s) else "persuasion attempt " + str(step) + " as the policy says") + ")")
+            text = ("the amount" + ("" if iso else " and the day") + " of the last proposal the customer said yes to for it, normally attempt "
+                    + str(step) + ": " + (_s[step - 1] if _s and 0 < step <= len(_s) else "persuasion attempt " + str(step) + " as the policy says")
+                    + "; if the customer accepted the floor or named an amount of their own instead, that amount, checked under the amount rules")
         accepted = True
         if day:
             line = _day_line(day, today, workdays, holidays, open_deadlines)
