@@ -418,7 +418,7 @@ def _param_hook(moved):
     )
 
 
-def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0, key=None):
+def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0, key=None, timeout_ms=12000):
     path, method = key or _find(api, tool)
     if path is None:
         raise ValueError(f"Tool API has no operation for {tool}")
@@ -521,7 +521,7 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0, 
     }
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
-    tool_obj = {"type": "function", "config": {"timeoutMs": 12000, "maxRetries": max_retries}, "function": function,
+    tool_obj = {"type": "function", "config": {"timeoutMs": timeout_ms, "maxRetries": max_retries}, "function": function,
                 "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"), identity.get("answer_value"),
                                                identity.get("max_wrong_answers"), tool == "verify_identity" and not _per_answer(spec, props))}
     hook = _param_hook(moved) if moved else ""

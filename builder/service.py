@@ -78,6 +78,8 @@ def spoken_opening(line, variables):
 SERVICE_END = ("End the call. Call it in the same message as the closing words, or right after the words the HANDOFFS say for a"
                " hand-off, once nothing more is to be said or done.")
 TEST_DATA_CHARS = 8000
+# A bank service can answer slowly and still succeed; the caller hears the answer rather than a failure hand-off.
+TOOL_TIMEOUT_MS = 30000
 VERBATIM_LIMIT = 40000
 
 
@@ -284,7 +286,7 @@ def compile_service(spec, api, briefs):
     for name, (path, method) in service_tools(api).items():
         op = api["paths"][path][method]
         description = " ".join(filter(None, [str(op.get("summary") or "").strip(), _text(hints.get(name))])) or name
-        tools.append(api_tool(api, name, tspec, description[:1000], key=(path, method)))
+        tools.append(api_tool(api, name, tspec, description[:1000], key=(path, method), timeout_ms=TOOL_TIMEOUT_MS))
     code = ("NOW_VARIABLE = " + _py_literal(now) + "\nLANGUAGE = " + _py_literal(language) + "\n"
             + compact_code((SNIPPETS / "service_dates.py").read_text()))
     code = _copy_code(tspec, tools) + code

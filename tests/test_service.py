@@ -184,3 +184,8 @@ def test_an_opening_with_unfilled_slots_is_not_spoken_as_is_and_the_agent_starts
     for line in ["Your card ending <last4> owes …", "Which card? For example [card name].", "Total {amount}.", "Hello {{name}}."]:
         assert spoken_opening(line, variables) == ""
     assert TOOL_START.startswith("The call starts with you")
+
+
+def test_service_tools_wait_longer_than_the_collection_default_for_a_slow_answer():
+    from builder.service import TOOL_TIMEOUT_MS
+    assert TOOL_TIMEOUT_MS >= 25000
