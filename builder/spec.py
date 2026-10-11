@@ -98,6 +98,12 @@ def _product_types(api, list_field, type_field):
         return []
 
 
+def _call_templates(text, call_vars):
+    """{first_name} or <first_name> for a call variable becomes the platform's {{first_name}}; anything else is left as it is."""
+    return re.sub(r"(?<!\{)\{\s*(\w+)\s*\}(?!\})|<\s*(\w+)\s*>",
+                  lambda m: "{{" + (m.group(1) or m.group(2)) + "}}" if (m.group(1) or m.group(2)) in call_vars else m.group(0), text)
+
+
 def normalize_spec(spec, api):
     """Coerce a model-written spec into the types the compiler and facts code expect. Idempotent."""
     spec = copy.deepcopy(spec) if isinstance(spec, dict) else {}
@@ -113,9 +119,7 @@ def normalize_spec(spec, api):
     call_vars = set(spec["call_variables"])
     if spec.get("opening_line"):
         # A brief's single-brace {first_name} would otherwise be spoken literally.
-        spec["opening_line"] = re.sub(r"(?<!\{)\{\s*(\w+)\s*\}(?!\})",
-                                      lambda m: "{{" + m.group(1) + "}}" if m.group(1) in call_vars else m.group(0),
-                                      spec["opening_line"])
+        spec["opening_line"] = _call_templates(spec["opening_line"], call_vars)
     identity = spec.get("identity") if isinstance(spec.get("identity"), dict) else {}
     questions = []
     for q in identity.get("questions") or []:
@@ -186,5 +190,7 @@ def normalize_spec(spec, api):
                 fixed[name] = {str(f): _text(h) for f, h in item.items()} if isinstance(item, dict) else {}
         spec[section] = fixed
     policy = spec.get("policy") if isinstance(spec.get("policy"), dict) else {"after_verification": _text(spec.get("policy"))}
-    spec["policy"] = {k: _text(v) for k, v in policy.items()}
+    # Seen live: a read wrote "Ask 'Am I speaking with {title} {last_name}?'", the platform filled nothing in and the agent
+    # asked every customer for the example name in the brief.
+    spec["policy"] = {k: _call_templates(_text(v), call_vars) for k, v in policy.items()}
     return spec

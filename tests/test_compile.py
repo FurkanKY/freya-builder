@@ -42,6 +42,18 @@ def test_call_variables_are_baked_and_other_fields_are_model_filled():
     assert "customer_id" not in body["required"]
 
 
+def test_the_identity_phase_sees_this_calls_values():
+    # Seen live: a read wrote "Am I speaking with {title} {last_name}?" and the agent asked every customer for the brief's
+    # example name. The call's values are always in the prompt, and single-brace or angle placeholders become templates.
+    spec = json.loads(json.dumps(SPEC))
+    spec["policy"]["before_verification"] = "Ask 'Am I speaking with {title} {last_name}?', or for <first_name>; offer {floor} never."
+    task = compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["task_message"]
+    assert "Ask 'Am I speaking with {{title}} {{last_name}}?', or for {{first_name}}; offer {floor} never." in task
+    names = [v for v in spec["call_variables"] if v != spec["now_variable"]]
+    assert names and all(f"- {v}: {{{{{v}}}}}" in task for v in names)
+    assert f"- {spec['now_variable']}:" not in task
+
+
 def test_close_call_drops_reason_for_reasonless_outcomes():
     wf = compile_workflow(SPEC, API, BRIEFS)
     tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "close_call")

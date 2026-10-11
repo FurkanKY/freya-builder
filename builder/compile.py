@@ -255,8 +255,12 @@ def compile_workflow(spec, api, briefs):
                 "transitions": list(before) + [{"target_node": target, "description": "always", "condition": {"operator": "always"}}]}
 
     questions = "\n".join(f"- {q.get('field')}: {q.get('ask')} (send as: {q.get('answer_format')})" for q in identity.get("questions", []))
+    # Seen live: with no value of its own in the prompt, the agent asked every customer for the brief's example name.
+    this_call = [v for v in spec.get("call_variables") or [] if v != spec.get("now_variable")]
     identify_task = "\n\n".join(filter(None, [
         "PHASE: before identity verification. The account is not visible yet and must not be discussed.",
+        ("THIS CALL (the values of this call's variables; names and values in the policy documents are only examples):\n"
+         + "\n".join(f"- {v}: {{{{{v}}}}}" for v in this_call)) if this_call else "",
         policy.get("before_verification"),
         "Security questions, in order (verify_identity field value: question):\n" + questions if questions else "",
         "Call verify_identity once for each answer the customer gives, with the field of the question you asked. An answer that"
