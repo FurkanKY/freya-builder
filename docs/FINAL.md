@@ -11,7 +11,7 @@ Times are Istanbul time (UTC+3). Briefs open at 20:00, submissions close at 23:0
 - The builder reads the brief through the `claude` CLI and its logged-in account, so that account's 5-hour usage limit must have room from 20:00 on. `scripts/chat_cases.py` uses the same account for its customer and its judge, and a full measurement can use up a whole window (seen Sunday 03:20: "You've hit your session limit"). The window is 5 hours from its first use: on Sunday one opened at 06:10 and a full measurement used it up by 07:30; the next opens at 11:10 and closes at 16:10. Use the CLI for nothing between 16:10 and 19:50, so the check at 19:50 opens a fresh window that lasts until 00:50: `claude -p --model claude-sonnet-5 "say ok"` answers with no limit message. `claude -p "/usage"` shows the account's session and weekly use and costs nothing (Sunday 07:47: weekly 48%, resets 16 October).
 
 ## For each final brief (slot final-1 for the first, final-2 for the second)
-1. Put the brief files and the tool API file in a new folder `final/<n>/`, unchanged.
+1. Put the brief files and the tool API file in a new folder `final/<n>/`, unchanged. `final/` is in `.gitignore`, so the tree stays clean and the trace's `build_start` line says `dirty: false` with the candidate's commit.
 2. Build it, with no manual step:
    `.venv/bin/python -m builder.build --brief final/<n>/<brief files> --tool-api final/<n>/<api>.json --slot final-<n>`
    One build takes about a minute; the limit is 30 minutes per run. Run the builds one after the other: a build started while another runs stops at once ("Another builder process is running").
