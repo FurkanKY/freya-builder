@@ -87,8 +87,15 @@ class Client:
         state=json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
         key=workspace+":"+slot
         if key not in state:
-            created=self.api("POST","/api/v2/workflow",{"name":"builder "+slot,"workflow":workflow})["workflow"]
-            state[key]={"workflow_id":created["id"],"agent_id":created["agentId"]}
+            try:
+                created=self.api("POST","/api/v2/workflow",{"name":"builder "+slot,"workflow":workflow})["workflow"]
+            except RuntimeError as exc:
+                # Seen: a run from another checkout made this slot's workflow, so this state file does not know it; the
+                # name is taken (409). Take that workflow over and update it in place.
+                if "already exists" not in str(exc): raise
+                created=self._named("builder "+slot)
+                if created is None: raise
+            state[key]={"workflow_id":created["id"],"agent_id":created.get("agentId")}
             write_json(self.state_path,state)
         record=state[key]
         wid=record["workflow_id"]
@@ -106,6 +113,19 @@ class Client:
         record["version"]=newest["versionNumber"]
         write_json(self.state_path,state)
         return dict(record)
+
+    def _named(self,name):
+        """The workspace's workflow with this name ({id, agentId}), else None."""
+        workspace=self.workspace()
+        for offset in range(0,1000,100):
+            page=self.api("GET","/api/v2/workflow",workspaceId=workspace,limit=100,offset=offset)
+            items=(page.get("workflows") or []) if isinstance(page,dict) else page
+            for w in items:
+                if w.get("name")==name:
+                    agent=w.get("agentId") or self.api("GET",f"/api/v2/workflow/{w['id']}",workspaceId=workspace)["workflow"].get("agentId")
+                    return {"id":w["id"],"agentId":agent}
+            if len(items)<100: return None
+        return None
 
     def export(self,workflow_id):
         w=self.api("GET",f"/api/v2/workflow/{workflow_id}",workspaceId=self.workspace(),finalizing=True)["workflow"]

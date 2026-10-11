@@ -80,3 +80,24 @@ def test_an_unavailable_service_is_retried_while_the_budget_allows(tmp_path, mon
     try: c.api("GET", "/y")
     except freya_client.Unavailable: pass
     assert len(calls) == 1
+
+
+def test_publish_takes_over_a_slot_workflow_made_from_another_checkout(tmp_path):
+    # Seen: a run from another checkout made "builder <slot>"; this state file did not know it and the create got 409.
+    calls=[]
+    workflow={"nodes":{"start":{}},"initial_node":"start"}
+    def transport(method,path,body,params,timeout):
+        calls.append((method,path))
+        if path=="/api/v2/workflow" and method=="POST":
+            raise RuntimeError('Freya POST /api/v2/workflow -> 409: {"message":"A workflow with this name already exists"}')
+        if path=="/api/v2/workflow" and method=="GET":
+            return {"workflows":[{"id":"w0","name":"builder other-a"},{"id":"w9","name":"builder case-x-a"}],"total":2}
+        if path=="/api/v2/workflow/w9" and method=="GET":
+            return {"workflow":{"id":"w9","agentId":"a9","workflow":workflow}}
+        if path=="/api/v2/versions/workflow/w9" and method=="GET":
+            return {"versions":[{"id":"v3","versionNumber":3,"isPublished":False}]}
+        return {}
+    c=Client("unused",Budget(1800),workspace_id="ws",state_path=tmp_path/'state.json',transport=transport)
+    deployment=c.publish("case-x-a",workflow)
+    assert deployment["workflow_id"]=="w9" and deployment["agent_id"]=="a9" and deployment["version"]==3
+    assert ("PUT","/api/v2/workflow/w9") in calls
