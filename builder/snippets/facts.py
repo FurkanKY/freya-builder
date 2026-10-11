@@ -107,13 +107,20 @@ def _deadline(rule, today, workdays, holidays):
             return datetime.date.fromisoformat(str(rule.get("date"))[:10])
         except Exception:
             return None
-    if kind in ("end_of_month", "last_business_day_of_month"):
+    if kind in ("end_of_month", "last_business_day_of_month", "end_of_next_month", "last_business_day_of_next_month"):
         first = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+        if "next_month" in kind:
+            first = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
         last = first - datetime.timedelta(days=1)
-        if kind == "last_business_day_of_month":
+        if kind.startswith("last_business_day"):
             while not _is_business(last, workdays, holidays) and last > today:
                 last = last - datetime.timedelta(days=1)
         return last
+    if kind in ("last_business_day_this_week", "last_business_day_next_week"):
+        week = _last_business_of_week(today, workdays, holidays)
+        if kind == "last_business_day_next_week" or week is None or week < today:
+            week = _last_business_of_week(today + datetime.timedelta(days=7), workdays, holidays)
+        return week
     return None
 
 
@@ -160,12 +167,19 @@ def _num(value):
 
 
 def _floor_of(product, rule, amount_field):
-    """The lowest acceptable amount: a product field, 'N%' or 'N% of <field>' (rounded up to the cent), or a fixed number."""
+    """The lowest acceptable amount: a product field, 'N%' or 'N% of <field>' (rounded up to the cent), a fixed number, or
+    max(...) / min(...) of those when the brief takes the larger or the smaller of two."""
     if rule is None or rule == "":
         return None, None
     if isinstance(rule, (int, float)) and not isinstance(rule, bool):
         return "fixed amount", float(rule)
     text = str(rule).strip()
+    m = re.match(r"^(max|min)\s*\((.+)\)$", text, re.I)
+    if m:
+        values = [_num(_floor_of(product, part.strip(), amount_field)[1]) for part in m.group(2).split(",")]
+        if len(values) < 2 or None in values:
+            return text, None
+        return text, (max(values) if m.group(1).lower() == "max" else min(values))
     m = re.match(r"^(\d+(?:\.\d+)?)\s*%(?:\s*of\s*(\w+))?$", text)
     if m:
         base = _num(product.get(m.group(2) or amount_field))
@@ -949,6 +963,9 @@ def run():
                 band = b
                 break
         floor_field, floor = _floor_of(p, _for_type(floors, kind), amount_field)
+        # The full amount is always acceptable, so a floor above it (a fixed minimum on a small debt) is the full amount.
+        if _num(floor) is not None and _num(p.get(amount_field)) is not None and _num(floor) > _num(p.get(amount_field)):
+            floor_field, floor = str(floor_field) + ", at most the amount owed", _num(p.get(amount_field))
         dl = band.get("_deadline") if band else None
         product_deadlines.append(dl)
         owed[str(p.get(id_field))] = " (amount owed now " + _money(p.get(amount_field)) + "; deadline " + (_label(dl) if dl else "see policy") + ")"

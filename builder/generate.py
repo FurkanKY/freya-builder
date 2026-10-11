@@ -42,10 +42,10 @@ SCHEMA = """Return exactly this shape:
   "account": {
     "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
     "amount_field": "<field with the amount owed now>", "segment_field": "<product field that selects the band, e.g. days late>",
-    "floor_field_by_type": {"<product type>": "<the minimum acceptable amount as the brief states it: a product field name, 'N%' of the amount owed, 'N% of <field>', or a fixed number>"},
+    "floor_field_by_type": {"<product type>": "<the minimum acceptable amount as the brief states it: a product field name, 'N%' of the amount owed, 'N% of <field>', or a fixed number; when the brief takes the larger or the smaller of two such amounts, 'max(<a>, <b>)' or 'min(<a>, <b>)'>"},
     "spoken_name_by_type": {"<product type>": "<how to name it aloud, the name only: the product kind plus an identifying product field if the API has one (e.g. last digits), inserted as <field_name>; never an amount or other values>"},
     "bands": [{"name": "...", "min": <number>, "max": <number>,
-               "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month (the last calendar day) | last_business_day_of_month | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
+               "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month (the last calendar day) | last_business_day_of_month | end_of_next_month | last_business_day_of_next_month | last_business_day_this_week | last_business_day_next_week | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
                "persuasion_attempts": <n>,
                "attempt_plan": ["<one entry per payment proposal the agent makes for a product in this band after the first ask, in order, e.g. 'attempt 1: <amount> by <last_business_day_this_week>'; tokens: <amount> <floor> <deadline> <next_business_day> <last_business_day_this_week> <last_business_day_next_week>; add the brief's conditions in words>"]}]
   },
@@ -178,11 +178,18 @@ def validate_spec(spec, api):
             if fields and acc.get(key) not in fields:
                 issues.append(f"account.{key} {acc.get(key)} is not a product field")
         kinds = fields.get(acc.get("type_field"), {}).get("enum") if fields else None
-        for kind, field in (acc.get("floor_field_by_type") or {}).items():
+        def floor_ok(field):
+            pair = re.match(r"^\s*(max|min)\s*\((.+)\)\s*$", str(field), re.I)
+            if pair:
+                parts = pair.group(2).split(",")
+                return len(parts) >= 2 and all(floor_ok(part.strip()) for part in parts)
             percent = re.match(r"^\s*\d+(?:\.\d+)?\s*%(?:\s*of\s*(\w+))?\s*$", str(field))
             fixed = isinstance(field, (int, float)) or re.match(r"^\s*\d+(?:\.\d+)?\s*$", str(field))
-            if fields and not fixed and (percent and percent.group(1) and percent.group(1) not in fields or not percent and field not in fields):
-                issues.append(f"floor {field} for {kind} is not a product field, 'N%', 'N% of <product field>' or a number")
+            return not fields or bool(fixed) or (bool(percent) and (not percent.group(1) or percent.group(1) in fields)) or (not percent and field in fields)
+        for kind, field in (acc.get("floor_field_by_type") or {}).items():
+            if not floor_ok(field):
+                issues.append(f"floor {field} for {kind} is not a product field, 'N%', 'N% of <product field>', a number,"
+                              " or max(...) / min(...) of those")
             if kinds and kind not in kinds:
                 issues.append(f"floor_field_by_type key {kind} is not a product type {kinds}")
         for kind in (acc.get("spoken_name_by_type") or {}):

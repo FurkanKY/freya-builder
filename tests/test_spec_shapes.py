@@ -135,6 +135,19 @@ def test_floor_can_be_a_percentage_a_fixed_amount_or_a_field():
     assert "floor (minimum_payment) 90" in _facts(spec, [product])
     spec["account"]["floor_field_by_type"] = {"credit_card": "10% of nonsense"}
     assert any("floor" in i for i in validate_spec(spec, API))
+    # "50, or 5% of the amount owed if that is more", and the smaller of two.
+    spec["account"]["floor_field_by_type"] = {"credit_card": "max(50, 5%)"}
+    assert "floor (max(50, 5%)) 106.26" in _facts(spec, [product])
+    assert validate_spec(spec, API) == []
+    spec["account"]["floor_field_by_type"] = {"credit_card": "min(minimum_payment, 10% of past_due)"}
+    assert "floor (min(minimum_payment, 10% of past_due)) 90" in _facts(spec, [product])
+    assert validate_spec(spec, API) == []
+    spec["account"]["floor_field_by_type"] = {"credit_card": "max(50, 5% of nonsense)"}
+    assert any("floor" in i for i in validate_spec(spec, API))
+    # A fixed minimum on a small debt is the whole debt.
+    small = dict(product, past_due=30.0)
+    spec["account"]["floor_field_by_type"] = {"credit_card": "max(50, 5%)"}
+    assert "floor (max(50, 5%), at most the amount owed) 30" in _facts(spec, [small])
 
 
 def test_clock_formats_and_operation_ids():
@@ -193,8 +206,22 @@ def test_last_working_day_of_the_month_is_a_business_day():
     assert scope["_deadline"](rule, today, set(range(6)), {}) == datetime.date(2026, 10, 31)
     assert scope["_deadline"](rule, today, set(range(5)), {"2026-10-30": "x"}) == datetime.date(2026, 10, 29)
     assert scope["_deadline"]({"type": "end_of_month"}, today, set(range(5)), {}) == datetime.date(2026, 10, 31)
-    # Only this month's end maps to a month-end kind; other month words stay unknown ("see policy").
+    nov30 = datetime.date(2026, 11, 30)
+    assert scope["_deadline"]({"type": "end_of_next_month"}, today, set(range(5)), {}) == nov30
+    assert scope["_deadline"]({"type": "end_of_next_month"}, datetime.date(2026, 12, 3), set(range(5)), {}) == datetime.date(2027, 1, 31)
+    assert scope["_deadline"]({"type": "last_business_day_of_next_month"}, today, set(range(5)), {"2026-11-30": "x"}) == datetime.date(2026, 11, 27)
+    # Wednesday 14 October: Friday 16th, then Friday 23rd; on Saturday 17th this week's last business day has passed.
+    week = {"type": "last_business_day_this_week"}
+    assert scope["_deadline"](week, today, set(range(5)), {}) == datetime.date(2026, 10, 16)
+    assert scope["_deadline"](week, datetime.date(2026, 10, 17), set(range(5)), {}) == datetime.date(2026, 10, 23)
+    assert scope["_deadline"]({"type": "last_business_day_next_week"}, today, set(range(5)), {}) == datetime.date(2026, 10, 23)
+    # This or next month's end and this or next week's last business day map to their kinds; a count, "after" or "within"
+    # stays unknown ("see policy").
     for kind, want in [("month_end", "end_of_month"), ("end-of-month", "end_of_month"), ("end_of_next_month", "end_of_next_month"),
+                       ("end of the following month", "end_of_next_month"),
+                       ("last working day of next month", "last_business_day_of_next_month"),
+                       ("end_of_week", "last_business_day_this_week"), ("last business day of next week", "last_business_day_next_week"),
+                       ("within a week", "within a week"), ("end of 2 weeks", "end of 2 weeks"),
                        ("calendar_month", "calendar_month"), ("months_after_today", "months_after_today")]:
         spec["account"]["bands"][0]["deadline"] = {"type": kind, "count": 1, "date": ""}
         assert normalize_spec(spec, API)["account"]["bands"][0]["deadline"]["type"] == want, kind

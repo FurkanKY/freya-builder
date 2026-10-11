@@ -191,10 +191,16 @@ def normalize_spec(spec, api):
         if not isinstance(band.get("deadline"), dict):
             band["deadline"] = {"type": "none", "count": 0, "date": ""}
         kind = str(band["deadline"].get("type") or "").lower()
-        # Only this month's end maps to the month-end kinds; 'end of next month' or 'months after today' stay unknown ('see policy').
+        # This month's or next month's end, and this week's or next week's last business day, map to their kinds;
+        # 'months after today', 'within a week' or a count stay as written (unknown: 'see policy').
         words = set(re.split(r"[^a-z0-9]+", kind))
-        if "month" in words and words & {"end", "last", "final"} and not words & {"next", "after", "following"} and not re.search(r"\d", kind):
-            band["deadline"]["type"] = "last_business_day_of_month" if re.search(r"business|working|work_day|workday", kind) else "end_of_month"
+        business = re.search(r"business|working|work_day|workday", kind)
+        if words & {"end", "last", "final"} and not words & {"after", "within"} and not re.search(r"\d", kind):
+            nxt = bool(words & {"next", "following"})
+            if "month" in words:
+                band["deadline"]["type"] = ("last_business_day_of" if business else "end_of") + ("_next_month" if nxt else "_month")
+            elif "week" in words:
+                band["deadline"]["type"] = "last_business_day_" + ("next_week" if nxt else "this_week")
         plan = band.get("attempt_plan")
         band["attempt_plan"] = [_text(p) for p in plan] if isinstance(plan, list) else ([plan] if isinstance(plan, str) and plan else [])
         bands.append(band)
