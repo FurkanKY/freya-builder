@@ -623,6 +623,16 @@ def test_the_first_ask_is_not_asked_again_after_today_or_a_question():
     assert "p3 car loan: refused 0 times; its note is already written in this call: propose nothing for it." in noted["plan_state"]
     assert "p3 car loan: attempt 1" not in noted["plan_state"]
     assert "NEXT STEP: no product has a proposal left. Your next message proposes no amount and no date" in noted["plan_state"]
+    # The same for a note written after the first ask was refused (a hardship or a dispute): the card is not queued again,
+    # and once the personal loan is at STOP the car loan's attempt 1 is named.
+    hard = dict(base, refusal_counts=json.dumps({"p1": 1, "p2": 1, "p3": 1}), recorded_calls=json.dumps({"p1": ["add_note"]}))
+    for _ in range(2):
+        hard = run_facts(wf, dict(hard, refused_products="personal loan", proposed_products="personal loan"))
+    assert "p1 credit card ending 2288: refused 1 time; its note is already written in this call: propose nothing for it." in hard["plan_state"]
+    assert "NEXT STEP: your next message makes exactly this proposal and no other: p3 car loan: attempt 1:" in hard["plan_state"]
+    assert "after p1" not in hard["plan_state"] and "p1 credit card ending 2288: attempt" not in hard["plan_state"]
+    hard = run_facts(wf, dict(hard, refused_products="car loan", proposed_products="car loan"))
+    assert hard["negotiation_done"] == "no" and "NEXT STEP: no product has a proposal left" in hard["plan_state"]
     # A promise recorded in the middle of the call ends that product's plan, whatever its count.
     kept = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 1, "p2": 3, "p3": 1}), refused_products="car loan", proposed_products="car loan",
                               **{"create_promise_args.product_id": "p1", "create_promise_response.data.ok": True}))

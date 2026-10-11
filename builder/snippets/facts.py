@@ -621,6 +621,11 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
         elif k == 0 and pid not in own and "add_note" in (recorded.get(pid) or []):
             # A note before any proposal is a dispute, a payment already made or another exception of the policy.
             text += "; its note is already written in this call: propose nothing for it"
+        elif pid not in own and "add_note" in (recorded.get(pid) or []) and not (total is not None and k > total):
+            # The same after the first ask was refused, the usual moment for a hardship or a dispute: seen in a review, the
+            # product stayed queued and the NEXT STEP proposed to it again. It is done like a product at STOP.
+            stopped.append(pid)
+            text += "; its note is already written in this call: propose nothing for it"
         elif k == 0 and pid in own:
             offered.append(pid + " " + label)
             text += ("; the customer gave a day or an amount for it: handle that under the date and amount rules; its plan starts only"
@@ -740,7 +745,8 @@ def _wrap_up(plans, counts, own, owed=None, details=None, recorded=None):
             offered.append(pid + " " + label)
             lines.append(pid + " " + label + (owed or dict()).get(pid, "") + ": the customer offered a day or an amount for it. Settle it under the date and amount rules,"
                          " read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
-        elif k == 0 and "add_note" in (recorded.get(pid) or []):
+        elif "add_note" in (recorded.get(pid) or []) and not k > _total((pid, label, steps, allowed)):
+            stopped += 1 if k else 0
             lines.append(pid + " " + label + ": its note is already written in this call (add_note succeeded): propose nothing for it"
                          " and do not write its note again.")
         elif k > _total((pid, label, steps, allowed)):
