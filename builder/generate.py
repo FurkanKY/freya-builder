@@ -39,13 +39,16 @@ SCHEMA = """Return exactly this shape:
     "answer_flag": "<property of the verify_identity response that means this one answer was correct; dotted path if nested. When the names alone must decide: the per-answer flag is named like the check itself (verified, correct, match), the whole-check flag names the overall state (all_verified, passed, complete, identity_confirmed)>"
   },
   "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}],
-               "closed_day_rule": "<what the brief says to do when the customer names a weekend day or holiday that is not after the deadline: next_business_day | previous_business_day | ask_again | none>"},
+               "closed_day_rule": "<what the brief says to do when the customer names a weekend day or holiday that is not after the deadline: next_business_day | previous_business_day | ask_again | none>",
+               "earliest_promise_day": "<today, or tomorrow only when the brief says a promise date may not be today>"},
   "account": {
     "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
     "amount_field": "<field with the amount owed now>", "segment_field": "<product field that selects the band, e.g. days late>",
     "floor_field_by_type": {"<product type>": "<the minimum acceptable amount as the brief states it: a product field name, 'N%' of the amount owed, 'N% of <field>', or a fixed number; when the brief takes the larger or the smaller of two such amounts, 'max(<a>, <b>)' or 'min(<a>, <b>)'>"},
     "spoken_name_by_type": {"<product type>": "<how to name it aloud, the name only: the product kind plus an identifying product field if the API has one (e.g. last digits), inserted as <field_name>; never an amount or other values>"},
     "bands": [{"name": "...", "min": <number>, "max": <number>,
+               "product_types": ["<only when the brief gives this band's rules for some product types only: those types; otherwise omit>"],
+               "floor_field_by_type": {"<product type>": "<only when the brief's minimum amount differs by band: this band's floor, written as for the account; otherwise omit this key>"},
                "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month (the last calendar day) | last_business_day_of_month | end_of_next_month | last_business_day_of_next_month | last_business_day_this_week | last_business_day_next_week | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
                "persuasion_attempts": <n>,
                "attempt_plan": ["<one entry per payment proposal the agent makes for a product in this band after the first ask, in order, e.g. 'attempt 1: <amount> by <last_business_day_this_week>'; tokens: <amount> <floor> <deadline> <next_business_day> <last_business_day_this_week> <last_business_day_next_week>; add the brief's conditions in words>"]}]
@@ -196,6 +199,16 @@ def validate_spec(spec, api):
         for kind in (acc.get("spoken_name_by_type") or {}):
             if kinds and kind not in kinds:
                 issues.append(f"spoken_name_by_type key {kind} is not a product type {kinds}")
+        for band in acc.get("bands") or []:
+            for kind in band.get("product_types") or []:
+                if kinds and kind not in kinds:
+                    issues.append(f"band {band.get('name')} product_types value {kind} is not a product type {kinds}")
+            for kind, field in (band.get("floor_field_by_type") or {}).items():
+                if not floor_ok(field):
+                    issues.append(f"band {band.get('name')} floor {field} for {kind} is not a product field, 'N%', 'N% of <product"
+                                  " field>', a number, or max(...) / min(...) of those")
+                if kinds and kind not in kinds:
+                    issues.append(f"band {band.get('name')} floor_field_by_type key {kind} is not a product type {kinds}")
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         issues.append(f"spec could not be checked against the tool API: {type(exc).__name__}: {exc}")
     tokens = ("amount", "floor", "deadline", "next_business_day", "last_business_day_this_week", "last_business_day_next_week")

@@ -1029,3 +1029,100 @@ def test_an_invented_plan_token_is_a_contract_error():
     spec["account"]["bands"][0]["attempt_plan"] = ["attempt 1: propose <amount> by <last_business_day_this_week>, or <next_business_day_of_week> if today is that day"]
     issues = validate_spec(spec, API)
     assert len(issues) == 1 and "<next_business_day_of_week>" in issues[0]
+
+
+def test_a_map_for_one_type_and_two_products_of_one_type():
+    spec, products = _three_products_spec()
+    # A floor and a name the brief gives for one type only are for that type; a key that is no type stands for every type.
+    spec["account"]["floor_field_by_type"] = {"credit_card": "minimum_payment"}
+    spec["account"]["spoken_name_by_type"] = {"credit_card": "credit card ending <card_last4>"}
+    out = run_facts(compile_workflow(spec, API, BRIEFS), {"now": "2026-10-14T11:00", "account_products": json.dumps(products)})
+    rows = out["account_facts"].split("\n")
+    assert "floor (minimum_payment) 153" in rows[1] and "floor (none for this type: the amount owed) 1320" in rows[2] and ": personal loan;" in rows[2]
+    spec["account"]["floor_field_by_type"] = {"loan": "instalment_amount"}
+    out = run_facts(compile_workflow(spec, API, BRIEFS), {"now": "2026-10-14T11:00", "account_products": json.dumps(products)})
+    assert "floor (instalment_amount) 440" in out["account_facts"].split("\n")[2]
+    # Two personal loans: each is named with its id, and a refusal of one leaves the other's proposals.
+    spec, products = _three_products_spec()
+    products[2] = dict(products[1], product_id="p9", past_due=900.0, days_late=20)
+    products[1]["days_late"] = 20
+    wf = compile_workflow(spec, API, BRIEFS)
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products)})
+    assert "personal loan p2;" in out["account_facts"] and "personal loan p9;" in out["account_facts"]
+    out = run_facts(wf, dict(out, refused_products="all", proposed_products="all"))
+    out = run_facts(wf, dict(out, refused_products="credit card", proposed_products="credit card ending 9015"))
+    out = run_facts(wf, dict(out, refused_products="personal loan p2", proposed_products="personal loan p2"))
+    counts = json.loads(out["refusal_counts"])
+    assert counts["p2"] == 2 and counts["p9"] == 1, counts
+
+
+def test_bands_by_product_type_band_floors_and_a_product_in_no_band():
+    spec, products = _three_products_spec()
+    spec["account"]["bands"] = [
+        {"name": "cards", "min": 1, "max": 90, "product_types": "credit_card", "persuasion_attempts": 1,
+         "deadline": {"type": "business_days_after_today", "count": 3, "date": ""}, "floor_field_by_type": {"credit_card": "50%"}},
+        {"name": "loans", "min": 1, "max": 90, "product_types": ["personal_loan", "car_loan"], "persuasion_attempts": 2,
+         "deadline": {"type": "end_of_month", "count": 0, "date": ""}}]
+    assert validate_spec(spec, API) == []
+    out = run_facts(compile_workflow(spec, API, BRIEFS), {"now": "2026-10-14T11:00", "account_products": json.dumps(products)})
+    rows = out["account_facts"].split("\n")
+    assert "band cards; deadline 2026-10-19" in rows[1] and "floor (50% of past_due) 255" in rows[1]
+    assert "band loans; deadline 2026-10-30" in rows[2] and "floor (instalment_amount) 440" in rows[2]
+    spec["account"]["bands"][1]["product_types"] = ["mortgage"]
+    assert any("mortgage is not a product type" in i for i in validate_spec(spec, API))
+    # A bucket written as text selects by its first number; a product no band matches gets the fewest attempts of any band.
+    spec, products = _three_products_spec()
+    products[0]["days_late"] = "11-45"
+    products[1]["days_late"] = 200
+    wf = compile_workflow(spec, API, BRIEFS)
+    out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products)})
+    rows = out["account_facts"].split("\n")
+    assert "band late" in rows[1] and "band" not in rows[2].split("Raw:")[0]
+    out = run_facts(wf, dict(out, refused_products="all", proposed_products="all"))
+    out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    assert "persuasion attempt 2" not in out["plan_state"] and "attempt 5" not in out["plan_state"]
+
+
+def test_promise_dates_from_tomorrow():
+    spec, products = _three_products_spec()
+    spec["calendar"]["earliest_promise_day"] = "a working day, not earlier than tomorrow"
+    spec["calendar"]["closed_day_rule"] = "previous_business_day"
+    wf = compile_workflow(spec, API, BRIEFS)
+    # Friday 16 October: this week's last business day is today, so the plan proposes Friday 23rd.
+    base = {"now": "2026-10-16T10:00", "account_products": json.dumps(products)}
+    out = run_facts(wf, dict(base))
+    assert "2026-10-16 Friday: TODAY, too early" in out["date_facts"]
+    assert "attempt 1: propose 2026-10-23 (Friday, 23 October 2026) for 510" in out["account_facts"]
+    out = run_facts(wf, dict(base, named_day_words="Saturday"))
+    assert "previous business day" not in out["named_day_facts"]
+    # A day of the customer's own that is today is not read back as it is.
+    out = run_facts(wf, dict(base, named_day_words="today", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
+    for _ in range(2):
+        out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan"))
+    assert out["wrap_up_mode"] == "llm" and "16 October 2026), is not accepted as it is" in out["plan_state"]
+
+
+def test_a_failed_write_and_a_closing_note_under_other_names():
+    spec, products = _three_products_spec()
+    wf = compile_workflow(spec, API, BRIEFS)
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
+    for response in ({"create_promise_response.data.success": False}, {"create_promise_response.data.ok": False, "create_promise_status_code": 200},
+                     {"create_promise_response.data.error": "date is a holiday", "create_promise_status_code": 200}):
+        out = run_facts(wf, dict(base, **{"create_promise_args.product_id": "p1"}, **response))
+        assert "create_promise" not in out["recorded_calls"], response
+    out = run_facts(wf, dict(base, **{"add_note_args.product_id": "p2", "add_note_args.reason": "payment_made", "add_note_response.data.ok": True}))
+    assert json.loads(out["recorded_calls"])["p2"] == ["add_note", "note:closed"]
+    out = run_facts(wf, dict(base, **{"add_note_args.product_id": "p2", "add_note_args.reason": "hardship", "add_note_response.data.ok": True}))
+    assert json.loads(out["recorded_calls"])["p2"] == ["add_note"]
+
+
+def test_the_read_back_question_is_never_an_identity_question():
+    spec, _ = _three_products_spec()
+    spec["policy"]["before_verification"] = "Ask \"Can you confirm your date of birth?\" and wait."
+    spec["policy"]["after_verification"] = "Read the promise back and ask \"Do you confirm this promise?\""
+    wf = compile_workflow(spec, API, BRIEFS)
+    code = wf["nodes"]["account_facts"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    scope = {"vars": {}}
+    exec(compile(code, "facts", "exec"), scope)
+    assert scope["_confirm_question"](scope["_spec"]()) == "Do you confirm this promise?"

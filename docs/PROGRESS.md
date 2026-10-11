@@ -418,3 +418,21 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Okuyucunun serbest yazdığı biçimler ("end of the following month", "end_of_week") bu türlere eşleniyor. Sayı içeren ya da "after"/"within" geçen biçimler eskisi gibi bilinmiyor sayılıyor ("see policy").
 - 77aeddc: araç yolu `/get_account/{customer_id}` biçimindeyse son adlı parçasından bulunuyor. Yol parametresi `{{ad}}` olarak, çağrı değişkeni adındaki sorgu parametresi URL'ye ekleniyor. Yerel doğrulama bunları geri eşliyor.
 - Public derlemelerde iş akışı bayt bayt aynı. 79 aramanın yeniden oynatılmasında fark yok. 72 test geçiyor.
+- 99523d2: başka takvim günlerindeki aramalar. Kit, ajanları "birkaç takvim gününde" deniyor; denetim bunları ayrıca denedi.
+  - Saat değişkeni başka adla ya da başka biçimde gelebiliyor ("21-10-2026 09:00", "Oct 21, 2026", "20261021T0900"); doğum tarihi hiçbir zaman saat sayılmıyor.
+  - "Gelecek ayın 15'i" gelecek aya çözülüyor. Kapalı güne düşen son tarih önceki iş gününe çekiliyor, ama bugünden önceye değil.
+  - Cumartesi günü "bu haftanın son iş günü" geçmişte kalıyordu; plan artık gelecek haftanınkini öneriyor.
+  - Sabit geri okuma satırı yalnız son tarihi kodla hesaplanmış ürünlerde ve müşteri başka bir tutar söylemediyse kullanılıyor.
+  - Okuyucunun uydurduğu bir plan sözcüğü (`<next_business_day_of_week>`, public B'nin seçilen okumasında görüldü) artık bir sözleşme hatası ve bir düzeltme okumasını tetikliyor.
+- 7c12182: kimlik sonucu ve araç API'si yeniden adlandırılabilir.
+  - Cevap sonucu "MATCH" gibi bir sözcük olabiliyor (`identity.answer_value`). Tanınmayan bir sonuç artık "yanlış" değil, "söylemedi" sayılıyor.
+  - get_account'un istediği çağrı anahtarı, sabit (const ya da tek değerli enum) alanlar ve kodun doldurduğu varsayılanlar araç gövdesine baştan yazılıyor.
+  - Tarih, araç alanının ya da güvenlik sorusunun istediği biçimde gönderiliyor.
+- Üçüncü toplu düzeltme (genel denetimin doğrulanmış bulguları):
+  - Aynı türden iki ürün (iki bireysel kredi) aynı adı alıyordu ve birinin reddi ötekinin tekliflerini tüketiyordu. Adları aynı olan ürünlere artık kimlikleri ekleniyor ("personal loan PL-1001").
+  - Tabanı ya da adı yalnız bir tür için verilmiş bir eşleme, öteki türlere de uygulanıyordu. Tek anahtar artık yalnız API'nin bir ürün türü değilse (yeniden adlandırılmış bir tür) her türe geçiyor. Eşlemede adı olmayan türün tabanı borcun kendisi sayılıyor.
+  - Not sebebi yeniden adlandırılınca ("settled", "payment_made", "not_owed", "contested") ödenmiş ya da itiraz edilmiş ürün geri okunuyordu. Kapatan sebep listesi genişletildi; "hardship" hâlâ kapatmıyor.
+  - Başarısız bir kayıt `success: false`, yalnız `error` ya da `ok: false` (boolean) ile dönünce yapılmış sayılıyordu. Düzeltildi.
+  - Sabit geri okuma satırının sorusu, kimlik bölümündeki bir sorudan ("Can you confirm your date of birth?") alınabiliyordu. Artık önce doğrulama sonrası ve kapanış metinleri aranıyor, doğrulama öncesi hiç aranmıyor.
+  - Bantlar ürün türüne göre olabiliyor (`band.product_types`), bant kendi tabanını verebiliyor (`band.floor_field_by_type`). Metin olarak gelen bir kova ("11-45") ilk sayısıyla, adıyla gelen kova bant adıyla eşleniyor. Hiçbir banda düşmeyen ürün en az deneme sayısını alıyor; önceden sınırsızdı (99).
+  - "Söz tarihi yarından önce olamaz" kuralı (`calendar.earliest_promise_day`, genx ve geny'de var). Takvim bugünü "çok erken" diye gösteriyor; "bu haftanın son iş günü" bugünse plan gelecek haftanınkini öneriyor; bugünkü gün olduğu gibi geri okunmuyor.

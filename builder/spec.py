@@ -195,11 +195,15 @@ def normalize_spec(spec, api):
     calendar["closed_day_rule"] = ("previous_business_day" if re.search(r"previous|prior|before|earlier", rule) else
                                    "next_business_day" if re.search(r"next|following|after|later", rule) else
                                    "ask_again" if re.search(r"ask|another|other|again", rule) else "none")
+    earliest = str(calendar.get("earliest_promise_day") or "").lower()
+    calendar["earliest_promise_day"] = "tomorrow" if re.search(r"tomorrow|next day|after today|not today|later than today", earliest) else "today"
     spec["calendar"] = calendar
     account = spec.get("account") if isinstance(spec.get("account"), dict) else {}
     types = _product_types(api, account.get("list_field"), account.get("type_field"))
     for key in ("floor_field_by_type", "spoken_name_by_type"):
         account[key] = _by_type(account.get(key), types)
+    # The facts code tells a map that covers one type from one whose key is a renamed type.
+    account["product_types"] = types
     bands = []
     for band in account.get("bands") or []:
         if not isinstance(band, dict):
@@ -211,6 +215,13 @@ def normalize_spec(spec, api):
                 band[bound] = int(band[bound]) if band[bound] == int(band[bound]) else band[bound]
             except (TypeError, ValueError):
                 pass
+        listed = band.get("product_types")
+        listed = [listed] if isinstance(listed, str) and listed else listed if isinstance(listed, list) else []
+        band["product_types"] = [str(t) for t in listed if t not in (None, "")]
+        if band.get("floor_field_by_type") not in (None, "", {}):
+            band["floor_field_by_type"] = _by_type(band.get("floor_field_by_type"), band["product_types"] or types)
+        else:
+            band.pop("floor_field_by_type", None)
         if not isinstance(band.get("deadline"), dict):
             band["deadline"] = {"type": "none", "count": 0, "date": ""}
         kind = str(band["deadline"].get("type") or "").lower()

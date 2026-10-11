@@ -248,8 +248,9 @@ def _money(value):
     return ("%.2f" % v).rstrip("0").rstrip(".") if v != int(v) else str(int(v))
 
 
-def _for_type(mapping, kind):
-    # Exact product type first, then a case-insensitive match, then a catch-all entry.
+def _for_type(mapping, kind, types=()):
+    # Exact product type first, then a case-insensitive match, then a catch-all entry. One entry under a key that is no
+    # product type of the API (a renamed type) stands for every type; one entry for a real type is for that type only.
     if not isinstance(mapping, dict):
         return mapping if isinstance(mapping, str) else None
     if kind in mapping:
@@ -260,28 +261,38 @@ def _for_type(mapping, kind):
     for k in ("*", "all", "any", "default"):
         if k in mapping:
             return mapping[k]
-    if len(mapping) == 1:
+    known = set(str(t).strip().lower() for t in types or [])
+    if len(mapping) == 1 and str(list(mapping.keys())[0]).strip().lower() not in known:
         return list(mapping.values())[0]
     return None
 
 
-def _spoken(template, product):
-    out = str(template or product.get("type") or "product")
+def _spoken(template, product, kind=""):
+    out = str(template or kind.replace("_", " ").strip() or product.get("type") or "product")
     for k, v in product.items():
         out = out.replace("<" + str(k) + ">", str(v))
     return out
 
 
+def _earliest(today):
+    """The first day a promise may be made for: today, or tomorrow when the brief says a promise date may not be today."""
+    rule = str((_spec().get("calendar") or dict()).get("earliest_promise_day") or "today")
+    return today + datetime.timedelta(days=1) if rule == "tomorrow" else today
+
+
 def _day_line(d, today, workdays, holidays, deadlines):
     text = d.isoformat() + " " + WEEKDAYS[d.weekday()]
+    earliest = _earliest(today)
     if d < today:
         text += ": in the PAST"
+    elif d < earliest:
+        text += ": TODAY, too early: the policy allows promise dates from tomorrow only"
     elif _is_business(d, workdays, holidays):
         text += ": business day"
     else:
         text += ": HOLIDAY (" + holidays[d.isoformat()] + "), NOT a business day" if d.isoformat() in holidays else ": weekend, NOT a business day"
         prv = _previous_business(d, workdays, holidays)
-        if prv and prv >= today:
+        if prv and prv >= earliest:
             text += "; previous business day " + prv.isoformat() + " " + WEEKDAYS[prv.weekday()]
         nxt = _next_business(d, workdays, holidays)
         if nxt:
@@ -417,11 +428,12 @@ def _named_day(today, workdays, holidays, deadlines):
     lines = [_day_line(d, today, workdays, holidays, deadlines) for d in days]
     rule = str((_spec().get("calendar") or dict()).get("closed_day_rule") or "none")
     within = all(days[0] <= dl for _, dl in deadlines) if days else False
-    if len(days) == 1 and days[0] >= today and within and not _is_business(days[0], workdays, holidays):
+    earliest = _earliest(today)
+    if len(days) == 1 and days[0] >= earliest and within and not _is_business(days[0], workdays, holidays):
         nxt, prv = _next_business(days[0], workdays, holidays), _previous_business(days[0], workdays, holidays)
         if rule == "next_business_day" and nxt:
             lines[0] += ". For this the policy says to offer the next business day: " + _label(nxt)
-        elif rule == "previous_business_day" and prv and prv >= today:
+        elif rule == "previous_business_day" and prv and prv >= earliest:
             lines[0] += ". For this the policy says to offer the previous business day: " + _label(prv)
         elif rule == "ask_again":
             lines[0] += ". For this the policy says to ask for another day"
@@ -671,6 +683,10 @@ def _var(key):
     return node
 
 
+# A note reason that closes a product for the call (paid, disputed, not the customer's), under the kit's names or others.
+CLOSING_NOTE = r"^\w*(disput|paid|fraud|not_?mine|wrong|settl|clear|contest|owed|payment_made|already|complain|query|closed)\w*$"
+
+
 def _recorded(ids):
     """Per product, the tools that already succeeded for it in this call, e.g. {"p2": ["add_note"]}. The engine keeps only each
     tool's last arguments (<tool>_args.<field>, seen live), so every run adds what it sees to a list kept in a variable.
@@ -689,15 +705,19 @@ def _recorded(ids):
         if m and isinstance(vars.get(key), dict):
             args.setdefault(m.group(1), []).extend(vars.get(key).values())
     for tool, values in args.items():
-        ok = str(_var(tool + "_response.data.ok") or "").strip().lower()
+        # A bank may answer ok, success, or only an error; False read as text is "false", not empty.
+        flag = _var(tool + "_response.data.ok")
+        flag = _var(tool + "_response.data.success") if flag is None else flag
+        ok = "" if flag is None else str(flag).strip().lower()
+        error = str(_var(tool + "_response.data.error") or "").strip().lower()
         code = str(_var(tool + "_status_code") or _var(tool + "_response.status_code") or "")
-        if ok in ("false", "0", "no") or (not ok and not code.startswith("2")):
+        if ok in ("false", "0", "no") or (not ok and error not in ("", "none", "null", "false")) or (not ok and not code.startswith("2")):
             continue
         for value in values:
             pid = str(value).strip()
             if pid in ids and tool not in seen.get(pid, []):
                 seen.setdefault(pid, []).append(tool)
-            if pid in ids and "note" in tool and any(re.match(r"^\w*(disput|paid|fraud|not_?mine|wrong)\w*$", str(v).strip(), re.I)
+            if pid in ids and "note" in tool and any(re.match(CLOSING_NOTE, str(v).strip(), re.I)
                                                     for v in values if len(str(v)) < 40):
                 # The note's reason closes the product for good: a day named after it is no promise.
                 if "note:closed" not in seen.get(pid, []):
@@ -935,7 +955,10 @@ def _amount_named(raw):
 
 def _confirm_question(spec):
     """The brief's own words for asking to confirm a promise when its policy quotes them, else a plain question."""
-    text = " ".join(str(v) for v in (spec.get("policy") or dict()).values())
+    policy = spec.get("policy") or dict()
+    # After verification first: a question quoted before verification ("Can you confirm your date of birth?") is no read-back.
+    keys = ["after_verification", "closing"] + sorted(k for k in policy if k not in ("after_verification", "closing", "before_verification"))
+    text = " ".join(str(policy.get(k) or "") for k in keys)
     for m in re.finditer(r"['\"\u201c\u2018]([A-Z][^'\"\u201c\u201d\u2018\u2019{}<>\n]{2,80}\?)['\"\u201d\u2019]", text):
         if re.search(r"\bconfirm|\bcorrect\b|\bright\b", m.group(1), re.I):
             return m.group(1)
@@ -974,10 +997,12 @@ def run():
         lines.append("Next business day after today: " + _label(nb) + ".")
     lb = _last_business_of_week(today, workdays, holidays)
     lbn = _last_business_of_week(today + datetime.timedelta(days=7), workdays, holidays)
-    if lb and lb < today:
+    earliest = _earliest(today)
+    if lb and lb < earliest:
         # Seen in an audit: on a Saturday the plan proposed yesterday. The week's last business day is then next week's.
-        lines.append("The current calendar week (Monday to Sunday) has no business day left: its last one, " + _label(lb) + ", has"
-                     " passed. A proposal for the last business day of this week uses the next one: " + _label(lbn) + ". Today is NOT that day.")
+        lines.append("The current calendar week (Monday to Sunday) has no business day left" + ("" if lb < today else " that the policy"
+                     " allows for a promise") + ": its last one, " + _label(lb) + (", has passed." if lb < today else ", is today.")
+                     + " A proposal for the last business day of this week uses the next one: " + _label(lbn) + ". Today is NOT that day.")
         lb = lbn
     elif lb:
         lines.append("Last business day of the current calendar week (Monday to Sunday): " + _label(lb) + ". Today " + ("IS" if lb == today else "is NOT") + " that day.")
@@ -995,7 +1020,8 @@ def run():
         band["_deadline"] = dl
         if dl and dl > far:
             far = dl
-        band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + "): deadline " + (_label(dl) if dl else "see policy") + ", persuasion attempts " + str(band.get("persuasion_attempts")) + ".")
+        for_types = (" for " + ", ".join(str(t) for t in band.get("product_types"))) if band.get("product_types") else ""
+        band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + for_types + "): deadline " + (_label(dl) if dl else "see policy") + ", persuasion attempts " + str(band.get("persuasion_attempts")) + ".")
     if band_lines:
         lines.append("Deadlines computed from today: " + " ".join(band_lines))
     products = _parse_products(spec)
@@ -1005,7 +1031,11 @@ def run():
     amount_field = acc.get("amount_field") or "past_due"
     id_field = acc.get("id_field") or "product_id"
     type_field = acc.get("type_field") or "type"
+    types = acc.get("product_types") or []
     recorded = _recorded([str(p.get(id_field)) for p in products])
+    # Two products of one type share a spoken name; the id tells them apart, for the agent and for the words counted.
+    spoken_names = [_spoken(_for_type(names, str(p.get(type_field) or ""), types), p, str(p.get(type_field) or "")) for p in products]
+    spoken_names = [n + " " + str(p.get(id_field)) if spoken_names.count(n) > 1 else n for n, p in zip(spoken_names, products)]
     rows = []
     done_rows = []
     owed = dict()
@@ -1014,14 +1044,31 @@ def run():
     plans = []
     for index, p in enumerate(products):
         kind = str(p.get(type_field) or "")
-        seg_value = _num(p.get(seg))
+        seg_raw = p.get(seg)
+        seg_value = _num(seg_raw)
+        if seg_value is None and isinstance(seg_raw, str):
+            # A bucket such as "8-45" or "90+" selects by its first number; a named bucket ("B2") by the band's name.
+            m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(?:-|\u2013|to\b|\+|$)", seg_raw)
+            seg_value = float(m.group(1)) if m else None
         band = None
-        for b in bands:
-            lo, hi = _num(b.get("min")), _num(b.get("max"))
-            if seg_value is not None and (lo is None or seg_value >= lo) and (hi is None or seg_value <= hi):
-                band = b
+        for typed in (True, False):
+            for b in bands:
+                listed = [str(t).strip().lower() for t in b.get("product_types") or []]
+                if bool(listed) != typed or (listed and kind.strip().lower() not in listed):
+                    continue
+                lo, hi = _num(b.get("min")), _num(b.get("max"))
+                named = isinstance(seg_raw, str) and str(b.get("name") or "").strip().lower() == seg_raw.strip().lower()
+                if named or (seg_value is not None and (lo is None or seg_value >= lo) and (hi is None or seg_value <= hi)):
+                    band = b
+                    break
+            if band:
                 break
-        floor_field, floor = _floor_of(p, _for_type(floors, kind), amount_field)
+        # A band's own floors (a floor that differs by days late) come before the account's.
+        rule = _for_type(band.get("floor_field_by_type") or dict(), kind, types) if band else None
+        floor_field, floor = _floor_of(p, rule if rule not in (None, "") else _for_type(floors, kind, types), amount_field)
+        if floor is None and floors and kind.strip().lower() in set(str(t).strip().lower() for t in types) and _for_type(floors, kind, types) is None:
+            # The brief gives a lower amount for other types only: this one is paid in full.
+            floor_field, floor = "none for this type: the amount owed", _num(p.get(amount_field))
         # The full amount is always acceptable, so a floor above it (a fixed minimum on a small debt) is the full amount.
         if _num(floor) is not None and _num(p.get(amount_field)) is not None and _num(floor) > _num(p.get(amount_field)):
             floor_field, floor = str(floor_field) + ", at most the amount owed", _num(p.get(amount_field))
@@ -1029,7 +1076,7 @@ def run():
         product_deadlines.append(dl)
         owed[str(p.get(id_field))] = " (amount owed now " + _money(p.get(amount_field)) + "; deadline " + (_label(dl) if dl else "see policy") + ")"
         owed_amount[str(p.get(id_field))] = _money(p.get(amount_field))
-        text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + _spoken(_for_type(names, kind), p)
+        text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + spoken_names[index]
         # A product at STOP is shown without its floor, plan and raw record: seen live, the model offered the floor it saw.
         done_rows.append(text + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date for it."
                          " Apply the policy for a product without a promise." + _already(recorded.get(str(p.get(id_field)))))
@@ -1060,11 +1107,16 @@ def run():
             text += "; PERSUASION PLAN, the complete list of proposals for this product, one step per refusal or non-answer, nothing else in between: " + " | ".join(chain)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
         rows.append(text)
-        spoken = _spoken(_for_type(names, kind), p)
+        spoken = spoken_names[index]
         try:
             allowed = int(band.get("persuasion_attempts")) if band else None
         except Exception:
             allowed = None
+        if not band:
+            # A product no band matches gets the fewest attempts any band allows, never an open count.
+            counts_of = [_num(b.get("persuasion_attempts")) for b in bands]
+            counts_of = [int(c) for c in counts_of if c is not None]
+            allowed = min(counts_of) if counts_of else None
         plans.append((str(p.get(id_field)), spoken, steps, allowed, (_tokens(spoken) | _tokens(kind.replace("_", " ")) | _tokens(p.get(id_field))) - NAME_STOP,
                       _money(floor) if floor is not None else ""))
     deadlines = []
@@ -1131,7 +1183,7 @@ def run():
         if day:
             line = _day_line(day, today, workdays, holidays, open_deadlines)
             dl = dict(open_deadlines).get(pid)
-            accepted = day >= today and _is_business(day, workdays, holidays) and (dl is None or day <= dl)
+            accepted = day >= earliest and _is_business(day, workdays, holidays) and (dl is None or day <= dl)
             if accepted:
                 text = "the day the customer gave, " + _label(day) + " (calendar: " + line + "), and " + text
             else:
