@@ -461,6 +461,12 @@ def compile_workflow(spec, api, briefs):
             "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
                 {"variable": "negotiation_done", "operator": "equals", "operand": "yes"},
                 {"variable": "wrap_up_mode", "operator": "equals", "operand": "say"}]}]}}, {
+            # Seen live (4 calls): after the fixed read-back, "Yes, I confirm" went to wrap_up's first entry, whose entry line
+            # cannot call a tool, and create_promise came out as text. Back in the node already entered, it is a turn with tools.
+            "target_node": "wrap_up_readback", "description": "no product has a proposal left and the fixed read-back was already said",
+            "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
+                {"variable": "negotiation_done", "operator": "equals", "operand": "yes"},
+                {"variable": "readback_said", "operator": "not_equals", "operand": "{}"}]}]}}, {
             "target_node": "wrap_up", "description": "no product has a proposal left",
             "condition": {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}}])}
            if DATE_CHECK else {}),

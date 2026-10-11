@@ -713,11 +713,16 @@ def test_stop_names_the_next_step():
     assert "PERSUASION PLAN" not in wf["nodes"]["wrap_up"]["task_message"] and "{{account_facts}}" not in wf["nodes"]["wrap_up"]["task_message"]
     assert wf["nodes"]["wrap_up"]["task_message"].rstrip().endswith("{{wrap_up_facts}}")
     route = wf["nodes"]["check_date"]["transitions"]
-    assert route[0]["target_node"] == "wrap_up_readback" and route[1]["target_node"] == "wrap_up"
+    assert [r["target_node"] for r in route] == ["wrap_up_readback", "wrap_up_readback", "wrap_up", "negotiate"]
     assert route[-1] == {"target_node": "negotiate", "description": "always", "condition": {"operator": "always"}}
     assert route[0]["condition"] == {"logic": "or", "conditions": [{"logic": "and", "conditions": [
         {"variable": "negotiation_done", "operator": "equals", "operand": "yes"}, {"variable": "wrap_up_mode", "operator": "equals", "operand": "say"}]}]}
-    assert route[1]["condition"] == {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}
+    # Seen live: the "yes" after the fixed read-back reached wrap_up's first entry, which cannot call create_promise. Every
+    # later closing turn goes back to the node already entered, where the reply is a turn with tools.
+    assert route[1]["condition"] == {"logic": "or", "conditions": [{"logic": "and", "conditions": [
+        {"variable": "negotiation_done", "operator": "equals", "operand": "yes"}, {"variable": "readback_said", "operator": "not_equals", "operand": "{}"}]}]}
+    assert out["readback_said"] != "{}" and again["readback_said"] == out["readback_said"] and again["negotiation_done"] == "yes"
+    assert route[2]["condition"] == {"logic": "or", "conditions": [{"variable": "negotiation_done", "operator": "equals", "operand": "yes"}]}
     bad = json.loads(json.dumps(wf))
     bad["nodes"]["check_date"]["transitions"][0]["condition"]["logic"] = "and"
     assert any("top-level logic must be or" in issue for issue in validate_workflow(bad, API))
