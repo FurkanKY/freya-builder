@@ -483,16 +483,17 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, rec
     # whose proposal was never made. Without a proposed product, only the first product with a proposal open, in bank order.
     if asked:
         accepted = [pid for pid in accepted if pid in asked]
-    elif len(accepted) > 1 and not first_open:
-        open_now = [pid for pid in all_ids if pid in accepted and pid not in agreed and not done(pid)
+    elif len(accepted) > 1 and (not first_open or closed):
+        open_now = [pid for pid in all_ids if pid not in agreed and not done(pid)
                     and (0 < k_of(pid) <= _total(plans[all_ids.index(pid)]) or (k_of(pid) == 0 and pid not in own))]
-        accepted = open_now[:1]
+        accepted = [pid for pid in open_now[:1] if pid in accepted]
     accepted = [pid for pid in accepted if not done(pid)]
-    # A yes to attempt 1 of a product the first ask already covered is that attempt accepted, not a day of the customer's own.
+    # A plain yes to attempt 1 of a product the first ask already covered is that attempt accepted, not a day of the customer's
+    # own. A yes that says the day back stays a day of their own, so the fixed read-back line still covers it.
     late_yes = [pid for pid in accepted if k_of(pid) == 0 and pid not in own and (not first_open or closed)
-                and not (asked and set(asked) == set(all_ids))]
+                and not (asked and set(asked) == set(all_ids)) and not (named_date and pid in dated_now)]
     for pid in dated_now:
-        if k_of(pid) == 0 and pid not in own and pid not in late_yes and not done(pid):
+        if k_of(pid) == 0 and pid not in own and pid not in late_yes:
             own.append(pid)
     changed = []
     fresh = []
@@ -562,9 +563,11 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, rec
     # A product whose proposal the customer accepted is agreed: seen in a review, a card that accepted its attempt 1 stayed
     # pending, was proposed again once the loan was done and held the car loan back. Only a refusal counted for it takes it
     # back; a group refusal while another product is proposed does not.
+    # A counted refusal also ends a day the customer gave for the product before, unless they named it in this answer. Seen in
+    # a review: an own day refused at the first ask came back as the day of the proposal accepted later.
     for pid in changed:
-        if pid in agreed:
-            agreed.pop(pid, None)
+        agreed.pop(pid, None)
+        if not (named_date and pid in dated_now):
             days_of.pop(pid, None)
     for pid in accepted + [pid for pid in dated_now if k_of(pid) > 0]:
         if pid in refused_now or done(pid):
@@ -588,7 +591,7 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, rec
     vars["own_offer_products"] = json.dumps(own)
     vars["own_offer_days"] = json.dumps(days_of, sort_keys=True)
     vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
-    return counts, changed, dated_now, question, [pid for pid in accepted if pid in agreed]
+    return counts, changed, dated_now, question, [pid for pid in accepted if pid in agreed or pid in own]
 
 
 def _var(key):
@@ -649,7 +652,7 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
                 first_closed=False, agreed=None, accepted_now=()):
     recorded = recorded or dict()
     agreed = agreed or dict()
-    pending_ids, accepted_names = [], []
+    accepted_names = []
     lines = []
     next_of = dict()
     first_of = dict()
@@ -708,13 +711,11 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
                 now.append("The customer has just refused the last proposal allowed for " + pid + " " + label + ". It is done: propose no amount"
                            " and no date for it any more.")
         elif steps:
-            pending_ids.append(pid)
             pending.append(pid + " " + label + ": attempt " + str(k) + ": " + steps[k - 1])
             next_of[pid] = pending[-1]
             text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
             later[pid] = ("next proposal for " + pid + ":", "next proposal for " + pid + ", {}:")
         else:
-            pending_ids.append(pid)
             pending.append(pid + " " + label + ": persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says")
             next_of[pid] = pending[-1]
             text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
@@ -733,9 +734,18 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
     order = [pl[0] for pl in plans]
     first_open = [pid for pid in order if pid in first_of]
     named = None
+    # The products with a proposal still to make, in bank order. Seen in a review: after the card's acceptance or STOP the
+    # car loan was named before the personal loan the first answer had left open.
+    queue = [pid for pid in order if pid in next_of or pid in first_of]
+
+    def name_next(pid):
+        if pid in next_of:
+            return propose + next_of[pid] + "." + waits
+        return (propose + first_of[pid] + "." + waits + " If the customer disputed " + pid + " or said it is already paid, apply the"
+                " policy for that instead and propose nothing for it.")
     if now and pending:
-        named = pending_ids[0]
-        now.append(propose + pending[0] + "." + waits)
+        named = queue[0]
+        now.append(name_next(named))
     elif (stopped or accepted_now) and not pending and not unasked:
         now.append(_closing_step(offered, details))
     elif question and first_open:
@@ -759,14 +769,10 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
             # Seen in a chat run: after a product's STOP, a product the first answer left open had no step named.
             now.append(propose + first_of[first_open[0]] + "." + waits + " If the customer disputed " + first_open[0] + " or said it is"
                        " already paid, apply the policy for that instead and propose nothing for it.")
-    if accepted_now and not named and not any(x.startswith("NEXT STEP") for x in now):
+    if accepted_now and queue and not named and not any(x.startswith("NEXT STEP") for x in now):
         # The customer accepted a proposal: the next product's proposal follows, one product at a time in bank order.
-        if pending_ids:
-            named = pending_ids[0]
-            now.append(propose + pending[0] + "." + waits)
-        elif first_open:
-            named = first_open[0]
-            now.append(propose + first_of[first_open[0]] + "." + waits)
+        named = queue[0]
+        now.append(name_next(named))
     if named:
         # Seen in a chat run: the NEXT STEP named the card, the loan's line named its own next proposal, and the model made
         # both in one message. The policy goes through the products one by one.
