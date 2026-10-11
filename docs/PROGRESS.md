@@ -497,3 +497,14 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - 13:42–14:10 ve 14:57'den sonra yeniden denendi; staging bu aralıkta da 500/503/504 verdi, uzun aramalar (PUB-12, varyantlar) her seferinde kesildi. Yalnız PUB-05 tamamlandı ve geçti (A 8/8).
   - Sabit teklif satırı platformda hiç tetiklenmedi: müşteri personaları reddederken bir gün de söylüyor ("not by Friday or any other date"), bu da satırı modele bırakıyor. Satırı sınamak için yalın retli iki vaka (`plain-bc.json`) ve claude CLI kullanmayan, cümleleri sabit bir müşteriyle konuşan bir betik (`scripted.py`) hazırlandı; CLI penceresinin dışında da koşabiliyor.
   - Yedek: `no-fixed-line` dalı (5591616) b09a6b8 ve 66aba73'ü geri alıyor, Cuma adımı ve zaman aşımları kalıyor; 97 test geçiyor.
+- 66aba73 ölçümünün sonu (Pazar 15:30–16:04; staging hâlâ 504 veriyordu, kesilen koşular sayılmadı):
+  - B: PUB-12 2/2, PUB-11 1/1, PUB-13 1/1. Sabit teklif satırı iki PUB-12 koşusunda da tetiklendi ("I understand. For your personal loan, can you pay 440 by Friday, 23 October?"), tutar ve gün doğruydu.
+  - Sabit müşteriyle (CLI'sız) iki arama, public-b üzerinde:
+    - PUB-13 yalın ret (22412c6a): kart bir deneme, kredi 900'ü reddetti, sabit satır tabanı söyledi (300, Cuma 23 Ekim). Müşteri kabul etti, geri okuma ve söz doğru, defter geçti.
+    - PUB-12 yalın ret (95a25a7a): plan baştan sona doğruydu. Kart 510, sonra sabit satırla 153; kredi 1320, sonra sabit satırla 440; araç kredisi 140, tek deneme. Üç ret notu yazıldı. Platform son turda takıldı ve close_call gelmedi.
+  - İlk sabit müşteri araması (6cc76afc) geçersiz. 504'ten sonra betik, sunucunun zaten aldığı satırı yeniden gönderdi. Doğum tarihi telefon sorusunun cevabı sayıldı, ardından dallanma aramayı kimlik düğümüne döndürdü. `scripted2.py` bir satırı yalnız kayıt onu hiç almadığını gösterince yeniden gönderiyor. chat_cases'in `reply_in_record`'u kayıt okunamayınca hâlâ yeniden gönderiyor.
+  - Toplam: platformun kesmediği her public koşusu geçti, sabit satır beş kez söylendi ve beşinde de doğruydu. Final adayı 66aba73 (etiket `final-candidate`); `no-fixed-line` dalı kullanılmıyor.
+  - H2 (holdout2, ilk kez tamamlanan koşular): PUB-04-v1 ve PUB-06-v1 geçti, iki vaka kaldı. İkisi de tek ürünlü aramalar; adımları model kendisi sayıyor.
+    - PUB-04-v2: "çok fazla"dan sonra taban 800 önerildi ama son tarih (29 Ekim) yerine bugün için. Sonraki retten sonra 1250 önerildi; taban takası (11.4) yapılmadı. Aşama 18'de ertelenen "çok fazla sonrası taban tutarın yerini alır" maddesi.
+    - PUB-06-v2: tabanın altındaki 100 reddedildi, 255.02 doğru gün için önerildi, söz doğru. Yalnız "kalanı gecikmiş kalır" cümlesi söylenmedi.
+    - Finalden önce değiştirilmedi. Tek ürünlü akış public A'da 10/10 geçiyor; 16:10–19:50 arası CLI kullanılmadığı için bir değişiklik ölçülemezdi.
