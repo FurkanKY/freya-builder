@@ -1248,7 +1248,7 @@ def run():
         if dl and dl > far:
             far = dl
         for_types = (" for " + ", ".join(str(t) for t in band.get("product_types"))) if band.get("product_types") else ""
-        band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + for_types + "): deadline " + (_label(dl) if dl else "each product's " + _due_field(band) if _due_field(band) else "see policy") + _attempts(band, ", ") + ".")
+        band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + for_types + "): deadline " + (_label(dl) if dl else "each product's " + str(_due_field(band)) if _due_field(band) else "see policy") + _attempts(band, ", ") + ".")
     if band_lines:
         lines.append("Deadlines computed from today: " + " ".join(band_lines))
     products = _parse_products(spec)
@@ -1311,7 +1311,11 @@ def run():
             # The product's own date (a statement's due date) is its deadline, as a fixed date is; a missing, unreadable or
             # past date gives none ('see policy').
             due = _clock(p.get(str(_due_field(band))))
-            dl = _deadline({"type": "fixed_date", "date": str(due.date())}, today, workdays, holidays, earliest) if due and due.date() >= earliest else None
+            due = due and due.date()
+            # A brief may move a due date on a closed day to the next business day (closed_day next_business_day).
+            if due and "next" in str(band["deadline"].get("closed_day")):
+                due = _next_business(due, workdays, holidays, True) or due
+            dl = _deadline({"type": "fixed_date", "date": str(due)}, today, workdays, holidays, earliest) if due and due >= earliest else None
             far = max(far, dl or far)
         product_deadlines.append(dl)
         owed[pid] = " (amount owed now " + amount + "; deadline " + (_label(dl) if dl else "see policy") + ")"

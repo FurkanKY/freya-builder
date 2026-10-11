@@ -361,6 +361,9 @@ def normalize_spec(spec, api):
         if band["deadline"].get("field") and (re.search(r"field|due|product|statement", kind)
                                               or (kind == "fixed_date" and not band["deadline"].get("date"))):
             band["deadline"]["type"] = "product_field"
+        if band["deadline"].get("closed_day"):
+            band["deadline"]["closed_day"] = ("next_business_day" if re.search(r"next|after|forward|following|sonraki|ilk", fold(band["deadline"]["closed_day"]))
+                                              else "previous_business_day")
         roll = str(band["deadline"].get("roll_forward") or "").lower()
         band["deadline"]["roll_forward"] = ("today_or_earlier" if re.search(r"today|earlier|passed|past", roll)
                                             else "before_first_promise_day" if re.search(r"first|before|earliest|promise", roll) else "")

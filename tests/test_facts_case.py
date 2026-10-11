@@ -141,3 +141,14 @@ def test_no_attempt_count_is_left_out():
     assert "persuasion attempts" not in out["account_facts"] and "persuasion attempts" not in out["date_facts"]
     assert "; band ekstre; deadline 2026-10-20 (Tuesday, 20 October 2026); floor (minimum_payment) 375" in out["account_facts"]
     assert "Band ekstre (segment 0 to 1000000000): deadline each product's due_date." in out["date_facts"]
+
+
+def test_a_due_date_on_a_closed_day_moves_to_the_next_business_day_when_the_brief_says_so():
+    band = {"name": "ekstre", "deadline": {"type": "product_field", "field": "due_date", "closed_day": "next_business_day"},
+            "persuasion_attempts": 1}
+    # Sunday 18 October: Monday 19 October.
+    out = _run(_spec(band=band), {"account_products": json.dumps(dict(STATEMENT, due_date="2026-10-18"))})
+    assert "deadline 2026-10-19 (Monday, 19 October 2026)" in out["account_facts"]
+    # A business day stays.
+    out = _run(_spec(band=band), {"account_products": json.dumps(dict(STATEMENT, due_date="2026-10-16"))})
+    assert "deadline 2026-10-16 (Friday, 16 October 2026)" in out["account_facts"]
