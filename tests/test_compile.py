@@ -255,11 +255,11 @@ def test_refusals_are_counted_per_product_in_code():
     assert validate_workflow(wf, API) == []
     negotiate = wf["nodes"]["negotiate"]
     assert [f["name"] for f in negotiate["extraction_schema"]] == ["named_day_words", "refused_products", "proposed_products", "dated_products",
-                                                                  "named_amount_words", "asked_back"]
-    assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == ["named_day_words", "refused_products",
-                                                                                                                "named_amount_words", "asked_back"]
+                                                                  "accepted_products", "named_amount_words", "asked_back"]
+    assert [c["conditions"][0]["variable"] for c in negotiate["transitions"][1]["condition"]["conditions"]] == [
+        "named_day_words", "refused_products", "named_amount_words", "accepted_products", "asked_back"]
     # A question back routes to the counter only while the first ask is open, and only with several products.
-    assert negotiate["transitions"][1]["condition"]["conditions"][3] == {"logic": "and", "conditions": [
+    assert negotiate["transitions"][1]["condition"]["conditions"][4] == {"logic": "and", "conditions": [
         {"variable": "asked_back", "operator": "equals", "operand": "yes"}, {"variable": "first_ask_open", "operator": "equals", "operand": "yes"},
         {"variable": "product_count", "operator": "not_equals", "operand": "1"}]}
     assert negotiate["extraction_schema"][-1]["enum_values"] == ["yes", "no"]
@@ -324,7 +324,7 @@ def test_only_proposals_the_assistant_made_are_counted():
                 {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
     base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
     # The extraction's 'nothing refused' value in other spellings counts nothing; 'none of them' refuses every product.
-    for word in ["None.", "nothing", "'none'", "none (accepted)", "Nothing refused", "N/A"]:
+    for word in ["None.", "nothing", "'none'", "none (accepted)", "Nothing refused", "N/A", "yes, credit card", "didn't refuse anything"]:
         out = run_facts(wf, dict(base, refusal_counts=json.dumps({"p2": 1}), refused_products=word))
         assert json.loads(out["refusal_counts"]) == {"p2": 1}, word
         assert out["refused_products"] == "none"
@@ -406,6 +406,50 @@ def test_only_proposals_the_assistant_made_are_counted():
     # The first answer that names a day for one product and refuses the others counts the first ask for those.
     out = run_facts(wf, dict(base, named_day_words="tomorrow", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
     assert json.loads(out["refusal_counts"]) == {"p2": 1, "p3": 1}
+
+
+def test_an_accepted_proposal_is_agreed_and_never_proposed_again():
+    spec = json.loads(json.dumps(SPEC))
+    step1 = "attempt 1: propose <last_business_day_this_week> for <amount>"
+    spec["account"]["bands"] = [
+        {"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""},
+         "persuasion_attempts": 1, "attempt_plan": [step1]},
+        {"name": "late", "min": 11, "max": 45, "deadline": {"type": "business_days_after_today", "count": 7, "date": ""},
+         "persuasion_attempts": 2, "attempt_plan": [step1, "attempt 2: propose <floor> on <deadline>"]}]
+    wf = compile_workflow(spec, API, BRIEFS)
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
+                {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
+                {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
+    out = run_facts(wf, dict(base, refused_products="all", proposed_products="all"))
+    # Seen in a review: the customer said yes to the card's attempt 1, the card stayed pending, was proposed again once the
+    # loan was done and held the car loan back. Now it is agreed, and the loan's attempt 1 is named next.
+    out = run_facts(wf, dict(out, accepted_products="credit card", proposed_products="credit card"))
+    assert json.loads(out["agreed_products"]) == {"p1": 1} and json.loads(out["refusal_counts"]) == {"p1": 1, "p2": 1, "p3": 1}
+    assert out["accepted_products"] == "none"
+    assert ("p1 credit card ending 9015: refused 1 time; after its attempt 1 (propose 2026-10-16 (Friday, 16 October 2026) for 510) the"
+            " customer agreed to pay it") in out["plan_state"]
+    assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p2 personal loan: attempt 1:")
+    assert out["plan_state"].splitlines()[0].endswith("The proposal the customer accepted for p1 credit card ending 9015 waits: no read-back"
+                                                      " and no confirmation question for it in this message.")
+    for _ in range(2):
+        out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    assert "NEXT STEP: your next message makes exactly this proposal and no other: p3 car loan: attempt 1:" in out["plan_state"]
+    assert "after p1" not in out["plan_state"] and "p1 credit card ending 9015: attempt" not in out["plan_state"]
+    # Once the car loan is done the closing phase reads back the card's accepted proposal, not the amount owed.
+    out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan"))
+    assert out["negotiation_done"] == "yes" and out["wrap_up_mode"] == "llm"
+    assert ("read-back for p1 credit card ending 9015: the amount and the day of the proposal the customer accepted (attempt 1:"
+            " propose 2026-10-16") in out["wrap_up_step"]
+    # A refusal takes an agreement back: the card's next proposal is its attempt 2.
+    back = run_facts(wf, dict(out, refused_products="credit card", proposed_products="credit card"))
+    assert json.loads(back["agreed_products"]) == {} and json.loads(back["refusal_counts"])["p1"] == 2 and back["negotiation_done"] == "no"
+    # A day for an asked product inside a refusal turn agrees it too: "Not the card. But the loan I can pay Friday."
+    out = run_facts(wf, dict(base, refused_products="all", proposed_products="all"))
+    out = run_facts(wf, dict(out, refused_products="credit card", proposed_products="all", dated_products="personal loan", named_day_words="Friday"))
+    assert json.loads(out["agreed_products"]) == {"p2": 1} and json.loads(out["own_offer_days"]) == {"p2": "2026-10-16"}
+    assert "p2 personal loan: refused 1 time; after its attempt 1 (" in out["plan_state"]
+    assert "next proposal for p2" not in out["plan_state"]
 
 
 def test_facts_read_products_flattened_under_the_node_name():

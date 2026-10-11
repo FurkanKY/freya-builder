@@ -15,7 +15,8 @@ LOOSE = 0.35
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
-            "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open", "first_ask_closed"}
+            "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open", "first_ask_closed",
+            "accepted_products", "agreed_products"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -340,6 +341,13 @@ def compile_workflow(spec, api, briefs):
                            " message, named with the assistant's own words for them, for example 'credit card'; 'all' when the day or"
                            " amount is for all of them. 'none' when the last message names no day, date or amount to pay, or only"
                            " mentions or asks about a product, or says they cannot pay it."}, {
+            # Seen in a review: a product that accepted a persuasion proposal stayed in the plan and was proposed again.
+            "name": "accepted_products", "type": "string", "min_confidence": 0.6,
+            "description": "The products whose payment proposal the customer accepts in their LAST message: a yes to the amount and"
+                           " the day the assistant just proposed for them, named with the assistant's own words, for example 'credit"
+                           " card'; 'all' when they accept a proposal made for all of them. 'none' when the last message accepts no"
+                           " proposal: it refuses, asks a question, gives a day or an amount of their own, only confirms a read-back,"
+                           " only says they understand, or only chats."}, {
             # The closing read-back is a fixed line with the amount owed; an amount of the customer's own turns it off.
             "name": "named_amount_words", "type": "string", "min_confidence": LOOSE,
             "description": "An amount of money the customer themselves says they can or will pay in their LAST message, copied as said,"
@@ -364,6 +372,7 @@ def compile_workflow(spec, api, briefs):
                 for v, extra in [("named_day_words", [])] + ([("refused_products", [
                     # One product keeps the flow that passes today.
                     {"variable": "product_count", "operator": "not_equals", "operand": "1"}]), ("named_amount_words", [
+                    {"variable": "product_count", "operator": "not_equals", "operand": "1"}]), ("accepted_products", [
                     {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])] + ([{
                 # A question back while the first ask is open: the plan names attempt 1 instead of the first ask again.
                 "logic": "and", "conditions": [
