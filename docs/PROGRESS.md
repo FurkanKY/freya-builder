@@ -482,3 +482,11 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Yeni `plain_refusal` çıkarımı yalnız teklifi reddeden bir cevabı işaretliyor. `check_date` bu durumda `say_proposal` düğümüne gidiyor; düğüm negotiate'in kopyası, girişte tts.
   - Model şunları kendisi ele alıyor: koşul içeren adımlar ("tam tutar, ya da müşteri çok dedi ise taban"), STOP, söylenen bir gün ya da tutar, soru, zorluk, tek ürünlü aramalar ve İngilizce dışındaki diller.
 - 267ef5e: haftanın son iş günü aranan müşteride, plan adımının "bugün o günse bir sonraki haftanın son iş günü" koşulu kodda çözülüyor: adım yalnız bir sonraki haftanın gününü söylüyor. Bu kural public A'nın 30. maddesi; önceden günü modelin görmesi gerekiyordu. Public vakalarının hepsi Çarşamba olduğu için Cuma'yı hiç ölçmemiştik.
+- 66aba73: b09a6b8'in incelemesi (üç denetçi, beş doğrulayıcı ajan) dört gerçek açık buldu; hepsi yerelde yeniden üretildi. Sabit cümle bu durumlarda modele bırakılıyor:
+  - notu yazılmış ürün (zorluk, itiraz, ödenmiş);
+  - ürün kimliğini içeren ad (aynı türden iki ürün);
+  - az önce reddedilen tutarı tekrarlayan adım. "Çok fazla" denince önerilen taban reddedilir ve 2. deneme aynı taban olur; yeni `proposed_amount` çıkarımı reddedilen tutarı tutuyor.
+  - Kuruşlu tutar iki ondalıkla söyleniyor ("61.20"). `plain_refusal` artık "konuşmak istemiyorum" ve "aramayın" cevaplarını kapsamıyor.
+- dc77d5d, c60c693: Pazar 12:50–13:05 arasında staging çöktü (sohbet 60 s'de 504 verdi). İki holdout derlemesi, doğrulama isteği 30 s'lik istemci zaman aşımına üç kez takıldığı için düştü.
+  - Zaman aşımı ve kopan bağlantı artık 503 gibi, bütçe elverdikçe ve artan aralıklarla yeniden deneniyor.
+  - İstek, ağ geçidinin süresi olan 60 s'ye kadar bekliyor. Finalde bütün takımlar 20:00'de derleyecek.
