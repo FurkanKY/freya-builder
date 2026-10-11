@@ -435,10 +435,20 @@ def _resolve_day(words, today):
     if " next week " in joined:
         start = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=7)
         return [start + datetime.timedelta(days=wd[0])]
+    # The brief's own convention, when it states one: "next <weekday>" in the calendar week after this one ("this <weekday>"
+    # in this week), or the next such day to come.
+    rule = str((_spec().get("calendar") or dict()).get("next_weekday") or "")
+    this_week = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=wd[0])
     if " next " in joined:
         # "next Friday" is the coming one for some callers and the one of next week for others.
         first = coming if coming > today else coming + datetime.timedelta(days=7)
+        if rule == "following_week":
+            return [this_week + datetime.timedelta(days=7)]
+        if rule == "coming":
+            return [first]
         return [first, first + datetime.timedelta(days=7)]
+    if " this " in joined and rule == "following_week":
+        return [this_week]
     if coming == today:
         return [today, today + datetime.timedelta(days=7)]
     return [coming]

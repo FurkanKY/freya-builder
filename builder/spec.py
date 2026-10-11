@@ -191,6 +191,9 @@ def normalize_spec(spec, api):
     calendar = spec.get("calendar") if isinstance(spec.get("calendar"), dict) else {}
     days = weekdays(calendar.get("business_weekdays"))
     calendar["business_weekdays"] = days or WEEKDAYS[:5]
+    convention = str(calendar.get("next_weekday") or "").strip().lower()
+    calendar["next_weekday"] = ("following_week" if re.search(r"follow|calendar|week after|next week", convention) else
+                                "coming" if re.search(r"coming|occurr|soonest|first", convention) else "")
     holidays = []
     for h in calendar.get("holidays") or []:
         if isinstance(h, dict):

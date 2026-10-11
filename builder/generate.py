@@ -44,7 +44,8 @@ SCHEMA = """Return exactly this shape:
   },
   "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}],
                "closed_day_rule": "<what the brief says to do when the customer names a weekend day or holiday that is not after the deadline: next_business_day | previous_business_day | ask_again | none>",
-               "earliest_promise_day": "<today, or tomorrow only when the brief says a promise date may not be today>"},
+               "earliest_promise_day": "<today, or tomorrow only when the brief says a promise date may not be today>",
+               "next_weekday": "<following_week when the brief says 'next <weekday>' is that weekday in the calendar week after the current one; coming when it says it is the next such day to come; omit when the brief says neither>"},
   "account": {
     "list_field": "<get_account response array of products; dotted path if nested>", "id_field": "...", "type_field": "...",
     "amount_field": "<field with the amount owed now; dotted path if nested>", "segment_field": "<product field that selects the band, e.g. days late>",

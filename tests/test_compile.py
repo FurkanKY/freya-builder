@@ -247,6 +247,29 @@ def test_day_words_resolve_from_the_call_date_not_the_server_clock():
     assert iso("the week after next") == []
 
 
+def test_the_briefs_own_convention_for_next_and_this_weekday():
+    # Brief A rule 22 and two held-out briefs: "next <weekday>" is that weekday in the calendar week after the current one.
+    for said, rule, today, days in (("next Friday", "the calendar week after the current one", (2026, 10, 14), ["2026-10-23"]),
+                                    ("next Friday", "following_week", (2026, 10, 16), ["2026-10-23"]),
+                                    ("next Monday", "following_week", (2026, 10, 14), ["2026-10-19"]),
+                                    ("this Friday", "following_week", (2026, 10, 16), ["2026-10-16"]),
+                                    ("this Monday", "following_week", (2026, 10, 14), ["2026-10-12"]),
+                                    ("next Friday", "the coming one", (2026, 10, 14), ["2026-10-16"]),
+                                    ("next Friday", "", (2026, 10, 14), ["2026-10-16", "2026-10-23"]),
+                                    ("Friday", "following_week", (2026, 10, 14), ["2026-10-16"])):
+        spec = json.loads(json.dumps(SPEC))
+        spec["calendar"]["next_weekday"] = rule
+        wf = compile_workflow(spec, API, BRIEFS)
+        code = wf["nodes"]["check_date"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+        scope = {"vars": {"now": "2026-10-14T11:00"}}
+        exec(compile(code, "facts", "exec"), scope)
+        assert [d.isoformat() for d in scope["_resolve_day"](said, datetime.date(*today))] == days, (said, rule, today)
+    # A day of this week that has passed is shown as past, so the agent asks for another day.
+    out = run_facts(compile_workflow(dict(SPEC, calendar=dict(SPEC["calendar"], next_weekday="following_week")), API, BRIEFS),
+                    {"now": "2026-10-14T11:00", "named_day_words": "this Monday"})
+    assert "2026-10-12 Monday: in the PAST" in out["named_day_facts"]
+
+
 def test_persuasion_plan_is_an_explicit_chain_with_a_stop():
     spec = json.loads(json.dumps(SPEC))
     spec["account"]["bands"][0]["attempt_plan"] = ["attempt 1: propose <amount> by <last_business_day_this_week>", "Attempt 2 - propose <floor> by <deadline>"]
