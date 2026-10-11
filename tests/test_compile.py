@@ -566,7 +566,22 @@ def test_the_first_ask_is_not_asked_again_after_today_or_a_question():
     assert json.loads(out["refusal_counts"]) == {"p1": 3, "p2": 3} and out["negotiation_done"] == "no"
     # After the last STOP the product the first answer left open gets its attempt 1 named, not today again.
     assert out["plan_state"].splitlines()[1] == ("NEXT STEP: your next message makes exactly this proposal and no other: p3 car loan:"
-                                                 " attempt 1: propose 2026-10-16 (Friday, 16 October 2026) for 75.")
+                                                 " attempt 1: propose 2026-10-16 (Friday, 16 October 2026) for 75. If the customer"
+                                                 " disputed p3 or said it is already paid, apply the policy for that instead and propose"
+                                                 " nothing for it.")
+    # A product whose note was written before any proposal (a dispute, a payment already made) is settled: nothing is
+    # proposed for it, and the closing step comes once the others are done.
+    noted = run_facts(wf, dict(out, refusal_counts=json.dumps({"p1": 3, "p2": 2}), refused_products="personal loan",
+                               proposed_products="personal loan", **{"add_note_args.product_id": "p3", "add_note_response.data.ok": True}))
+    assert "p3 car loan: refused 0 times; its note is already written in this call: propose nothing for it." in noted["plan_state"]
+    assert "p3 car loan: attempt 1" not in noted["plan_state"]
+    assert "NEXT STEP: no product has a proposal left. Your next message proposes no amount and no date" in noted["plan_state"]
+    # A promise recorded in the middle of the call ends that product's plan, whatever its count.
+    kept = run_facts(wf, dict(base, refusal_counts=json.dumps({"p1": 1, "p2": 3, "p3": 1}), refused_products="car loan", proposed_products="car loan",
+                              **{"create_promise_args.product_id": "p1", "create_promise_response.data.ok": True}))
+    assert "p1 credit card ending 2288: refused 1 time; its promise is already recorded in this call" in kept["plan_state"]
+    assert "p1 credit card ending 2288: attempt" not in kept["plan_state"] and kept["negotiation_done"] == "yes"
+    assert "its promise is already recorded in this call (create_promise succeeded)" in kept["wrap_up_facts"]
     # Seen in a chat run: "Why do you need all of them paid today?" right after the first ask. Nothing is counted; the plan
     # says to answer and make attempt 1 of the first product, and the first ask is closed.
     out = run_facts(wf, dict(base, named_day_words="today", asked_back="yes", refused_products="none", proposed_products="all"))
@@ -576,10 +591,18 @@ def test_the_first_ask_is_not_asked_again_after_today_or_a_question():
                                         " then in the same message make exactly this proposal and no other: p1 credit card ending 2288:"
                                         " attempt 1: propose 2026-10-16 (Friday, 16 October 2026) for 220.")
     assert "p2 personal loan: refused 0 times; nothing refused yet; the first ask already covered it" in out["plan_state"]
+    asked = dict(out)
     # The refusal of that proposal is the card's attempt 1; the loans still start at attempt 1.
     out = run_facts(wf, dict(out, refused_products="credit card", proposed_products="credit card"))
     assert json.loads(out["refusal_counts"]) == {"p1": 2}
     assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p1 credit card ending 2288: attempt 2:")
+    # The first ask stays closed on later turns: a "why Friday?" turn keeps the lines that forbid asking it again.
+    why = run_facts(wf, dict(asked, named_day_words="Friday", asked_back="yes", proposed_products="credit card"))
+    assert json.loads(why["refusal_counts"]) == {} and "NEXT STEP" not in why["plan_state"]
+    assert why["first_ask_open"] == "no" and "p2 personal loan: refused 0 times; nothing refused yet; the first ask already covered it" in why["plan_state"]
+    # A question that names a day of the customer's own is an offer, not a bare question.
+    dayq = run_facts(wf, dict(base, named_day_words="30 October", asked_back="yes", proposed_products="all"))
+    assert "the first ask is made" not in dayq["plan_state"] and dayq["first_ask_open"] == "yes"
     # A question before the first ask, or once it is answered, changes nothing.
     early = run_facts(wf, dict(base, asked_back="yes", proposed_products="none"))
     assert "NEXT STEP" not in early["plan_state"] and early["first_ask_open"] == "yes"

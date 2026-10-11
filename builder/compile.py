@@ -14,7 +14,7 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
-            "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open"}
+            "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open", "first_ask_closed"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -336,10 +336,11 @@ def compile_workflow(spec, api, briefs):
                            " it only accepts, refuses or repeats the assistant's amount, or names only a day."}, {
             # Seen in a chat run: "why do you need all of them today?" right after the first ask, and the model asked it again.
             "name": "asked_back", "type": "string", "enum_values": ["yes", "no"], "min_confidence": 0.6,
-            "description": "'yes' when the customer's LAST message only asks the assistant a question, for example 'why do you need"
-                           " that?', 'why today?' or 'which account is this about?', and gives no answer: it refuses nothing, names no"
-                           " day or amount, accepts nothing, mentions no hardship, dispute or payment already made, and is not cut off."
-                           " 'no' otherwise."}] if COUNT_CHECK else [])}
+            "description": "'yes' only when the customer's LAST message is just a question about the payment the assistant asked for,"
+                           " for example 'why do you need that?', 'why today?', 'why all of them?' or 'which account is this about?',"
+                           " with no answer in it: it refuses nothing, names no day or amount and accepts nothing. 'no' for everything"
+                           " else, including a request (another plan, lower instalments, a discount, a person, a callback), a question"
+                           " about support, a mention of hardship, a dispute or a payment already made, and a message that is cut off."}] if COUNT_CHECK else [])}
            if DATE_CHECK else {}),
         # Multi-rule date, amount and per-product attempt decisions happen here.
         "reasoning_override": NEGOTIATE_REASONING,
