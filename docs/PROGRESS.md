@@ -519,3 +519,5 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Sabit müşteri (PUB-13 yalın ret) aramasında (cc7d9a4a) karta ikinci teklif yapılmadı: kart 16 Ekim'e 300, kredi 16 Ekim'e 900, sabit satırla 23 Ekim'e 300, söz kaydedildi, defter PASS. Doğrulama hatası yok, dallanma yok.
   - Kit simülasyonu B, 2 tekrar (v35): 6/6.
   - Kit simülasyonu A, 1 tekrar (v11): 10/10.
+- Prova derlemesi adf1c1a'da (Pazar 17:06, slot rehearsal-z, suite yok, finaldeki gibi): 92 s, `dirty: false`, model claude-sonnet-5, üç okuma da başarılı, `fields_that_differ` boş, doğrulandı ve yayımlandı. Hesabın 5 saatlik penceresi bu oturumun kendi kullanımıyla 16:10'da açılmıştı; derlemeden sonra hâlâ %3.
+- H2'nin tek ürünlü kaçırmalarına yeniden bakıldı ve yine değiştirilmedi. Spec kuralı doğru yazıyor ("too much" sonrası taban, kalan gecikmiş kalır, sonraki her deneme taban), ama tek ürünlü akışta "too much" ve ret turlarından sonra hiçbir kod düğümü çalışmıyor (`check_date`'e ret yönlendirmesi yalnız çok ürünlü aramalarda). Deterministik bir düzeltme o akışın yönlendirmesini değiştirmek demek.
