@@ -475,6 +475,16 @@ def _named_day(today, workdays, holidays, deadlines):
     rule = str((_spec().get("calendar") or dict()).get("closed_day_rule") or "none")
     within = all(days[0] <= dl for _, dl in deadlines) if days else False
     earliest = _earliest(today)
+    # A closed day moved back to the previous business day is judged by that day: a deadline that fell on a closed day was
+    # moved back too, and the customer who names the brief's own latest date has not named a day too late.
+    if len(days) == 1 and not within and rule == "previous_business_day" and days[0] >= earliest and not _is_business(days[0], workdays, holidays):
+        prv = _previous_business(days[0], workdays, holidays)
+        if prv and prv >= earliest and deadlines and all(prv <= dl for _, dl in deadlines):
+            within = True
+            d = days[0]
+            lines[0] = (d.isoformat() + " " + WEEKDAYS[d.weekday()] + ": " + ("HOLIDAY (" + holidays[d.isoformat()] + ")" if d.isoformat()
+                        in holidays else "weekend") + ", NOT a business day; the policy moves a closed day back to the previous business day, "
+                        + _label(prv) + ", which is on or before the deadline of " + ", ".join(name for name, _ in deadlines))
     if len(days) == 1 and days[0] >= earliest and within and not _is_business(days[0], workdays, holidays):
         nxt, prv = _next_business(days[0], workdays, holidays), _previous_business(days[0], workdays, holidays)
         if rule == "next_business_day" and nxt:

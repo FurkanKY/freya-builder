@@ -994,6 +994,23 @@ def _three_products_spec(deadline=None):
     return spec, products
 
 
+def test_a_closed_day_after_a_moved_deadline_is_judged_by_the_day_it_moves_to():
+    # A held-out brief: "a date on a closure day is moved to the previous working day if that is still allowed". The latest
+    # date, Saturday 24 October, was moved back to Friday 23rd; the customer who names the 24th has not named a day too late.
+    spec, products = _three_products_spec({"type": "calendar_days_after_today", "count": 9, "date": ""})
+    spec["calendar"]["closed_day_rule"] = "previous_business_day"
+    wf = compile_workflow(spec, API, BRIEFS)
+    base = {"now": "2026-10-15T10:00", "account_products": json.dumps(products[1:2])}
+    out = run_facts(wf, dict(base))
+    assert "2026-10-23 (Friday" in out["account_facts"]
+    for words in ("Saturday 24 October", "Sunday the 25th"):
+        out = run_facts(wf, dict(base, named_day_words=words))
+        assert "moves a closed day back to the previous business day, 2026-10-23" in out["named_day_facts"], out["named_day_facts"]
+        assert "AFTER the deadline" not in out["named_day_facts"] and "offer the previous business day: 2026-10-23" in out["named_day_facts"]
+    out = run_facts(wf, dict(base, named_day_words="Saturday 31 October"))
+    assert "AFTER the deadline of p2" in out["named_day_facts"] and "moves a closed day" not in out["named_day_facts"]
+
+
 def test_calls_on_other_calendar_days():
     # The kit tests every agent "on several calendar days": a weekend call, a deadline on a closed day, and other clocks.
     spec, products = _three_products_spec()
