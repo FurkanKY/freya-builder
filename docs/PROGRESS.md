@@ -389,3 +389,19 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Ret alanında "yes, credit card" ve "didn't refuse anything" artık ret sayılmıyor.
   - 68 test geçiyor. Üç derlemede prompt farkı yalnız yeni çıkarım alanı ve check_date geçişi.
 - 11:11'de çalışacak ölçüm zinciri (measure8.sh), HEAD'den public-b ve public-a'yı sırayla derleyecek. Ardından B × 2, varyantlar × 1 (yeni kart-kabul vakası dahil), A × 1 ve beş insan üslubunun her biri × 1 koşacak.
+- 8524e1a'nın bağımsız incelemesi (üç açı, her bulgu ayrıca çürütülmeye çalışıldı) altı gerçek kusur doğruladı. Düzeltme 8d8e8d4:
+  - Kredinin teklifine verilen "hiçbirini ödeyemem" (refused 'all', proposed 'personal loan') kartın anlaşmasını sayım yapmadan geri alıyordu. Kart, kredinin STOP'undan sonra kabul ettiği teklifle yeniden öneriliyordu. Artık yalnız o ürün için sayılan bir ret anlaşmayı geri alıyor. Teklif edilen ürün çıkarılmamışsa grup reddi ve çıplak "hayır" anlaşılmış ürüne değil, üzerinde çalışılan ürüne gidiyor.
+  - `accepted_products` içindeki 'all', 'everything' ya da 'the loan', hiç teklif edilmemiş ürünleri de anlaşılmış sayıyordu. Kabul artık teklif edilen ürünle sınırlı. Teklif edilen ürün çıkarılmamışsa banka sırasındaki ilk açık ürün alınıyor.
+  - İlk sorunun açık bıraktığı bir ürünün (sayaç 0) 1. denemesine verilen "evet" müşterinin kendi günü sayılıyordu: geri okuma borcu gün olmadan okuyordu ve sonraki ürün söylenmiyordu. Artık bu, kabul edilmiş 1. deneme.
+  - Notu ya da sözü yazılmış ürün çıkarımla anlaşılmış sayılmıyor. İlk sorudaki soru-cevap kabul sayılmıyor. Tüm ürünler anlaşılmışsa ve hiçbiri STOP'ta değilse geri okuma adımı söyleniyor.
+  - Geri okuma, müşteri plan adımı yerine tabanı ya da kendi tutarını kabul ettiyse o tutarı kullan diyor.
+- İkinci inceleme (8d8e8d4 üzerinde) beş kusur daha buldu. Düzeltme 98a4925:
+  - Müşterinin önce verip sonra reddettiği gün `own_offer_days`'de kalıyordu. Sonraki "evet" o günle geri okunuyordu; gün son tarihten sonraysa kapanış hiç başlamıyordu. Sayılan bir ret, aynı cevapta yeni bir gün söylenmediyse, kayıtlı günü siliyor.
+  - Soru-cevapla kapanan ilk sorudan sonra teklif edilen ürün çıkarılmadan gelen 'all', bütün ürünleri anlaşılmış sayıyordu. Daraltma artık ilk soru kapandığında her durumda uygulanıyor.
+  - Kabulden ya da STOP'tan sonra, ilk cevabın açık bıraktığı kredi yerine taşıt kredisi söyleniyordu. Sıradaki teklif artık banka sırasında teklifi kalan ilk ürün.
+  - Günü tekrar eden "evet, cuma olur" müşterinin kendi günü olarak kalıyor (8d8e8d4 öncesi gibi), böylece sabit geri okuma satırı onu da kapsıyor. Sonraki ürünün teklifi yine geliyor.
+  - Zorluk notundan sonra söylenen gün yine müşterinin kendi günü sayılıyor; politika bu sözü kaydediyor.
+- Doğrulama:
+  - Gerçek 79 sohbet aramasının (106d0e5, 007dea1 ve b90f3e6 koşuları) değişken tabloları eski ve yeni kodla yeniden oynatıldı (scratchpad replay.py). Fark yalnız kabul turlarında, bir de PUB-13-v2'de reddedilen kredinin kayıtlı gününün silinmesinde. Tek ürünlü A aramalarında fark yok.
+  - Rastgele 4000 çıkarım dizisinde çökme yok. Anlaşılmış bir ürün hiç önerilmedi, hiçbir NEXT STEP iki teklif yapmadı.
+  - 71 test geçiyor.
