@@ -123,11 +123,21 @@ def _last_business_of_week(day, workdays, holidays):
     return best
 
 
+ROLL = {"end_of_month": "end_of_next_month", "last_business_day_of_month": "last_business_day_of_next_month",
+        "last_business_day_this_week": "last_business_day_next_week"}
+
+
 def _deadline(rule, today, workdays, holidays, earliest=None):
     """The band's latest promise date. A calendar rule that lands on a weekend or holiday gives the last business day before
     it (when that is not before the first day a promise may name): a promise date is a business day, and the closed-day rule
     would offer one after it."""
     day = _deadline_day(rule, today, workdays, holidays)
+    # The brief's own fallback when this month's (or week's) day is today or earlier, or before the first promise day:
+    # the same rule for the next month (or week).
+    roll = str(rule.get("roll_forward") or "") if isinstance(rule, dict) else ""
+    later = ROLL.get(str(rule.get("type") or "")) if isinstance(rule, dict) else None
+    if day is not None and later and ((roll == "today_or_earlier" and day <= today) or (roll == "before_first_promise_day" and day < (earliest or today))):
+        day = _deadline_day(dict(rule, type=later), today, workdays, holidays)
     if day is not None and not _is_business(day, workdays, holidays):
         earlier = _previous_business(day, workdays, holidays)
         if earlier is not None and earlier >= (earliest or today):

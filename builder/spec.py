@@ -246,6 +246,9 @@ def normalize_spec(spec, api):
                 band["deadline"]["type"] = ("last_business_day_of" if business else "end_of") + ("_next_month" if nxt else "_month")
             elif "week" in words:
                 band["deadline"]["type"] = "last_business_day_" + ("next_week" if nxt else "this_week")
+        roll = str(band["deadline"].get("roll_forward") or "").lower()
+        band["deadline"]["roll_forward"] = ("today_or_earlier" if re.search(r"today|earlier|passed|past", roll)
+                                            else "before_first_promise_day" if re.search(r"first|before|earliest|promise", roll) else "")
         plan = band.get("attempt_plan")
         band["attempt_plan"] = [_text(p) for p in plan] if isinstance(plan, list) else ([plan] if isinstance(plan, str) and plan else [])
         bands.append(band)

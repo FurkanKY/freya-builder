@@ -217,6 +217,20 @@ def test_last_working_day_of_the_month_is_a_business_day():
     assert scope["_deadline"](week, today, set(range(5)), {}) == datetime.date(2026, 10, 16)
     assert scope["_deadline"](week, datetime.date(2026, 10, 17), set(range(5)), {}) == datetime.date(2026, 10, 23)
     assert scope["_deadline"]({"type": "last_business_day_next_week"}, today, set(range(5)), {}) == datetime.date(2026, 10, 23)
+    # The brief's fallback for a month's end that is today or earlier: the next month's (Friday 30 October is the last business
+    # day of October; Saturday 31st is after it). With no fallback the day stays as computed.
+    roll = {"type": "last_business_day_of_month", "roll_forward": "today_or_earlier"}
+    assert scope["_deadline"](roll, datetime.date(2026, 10, 30), set(range(5)), {}) == nov30
+    assert scope["_deadline"](roll, datetime.date(2026, 10, 31), set(range(5)), {}) == nov30
+    assert scope["_deadline"](roll, datetime.date(2026, 10, 29), set(range(5)), {}) == datetime.date(2026, 10, 30)
+    assert scope["_deadline"](rule, datetime.date(2026, 10, 30), set(range(5)), {}) == datetime.date(2026, 10, 30)
+    first = {"type": "end_of_month", "roll_forward": "before_first_promise_day"}
+    assert scope["_deadline"](first, datetime.date(2026, 10, 30), set(range(5)), {}, datetime.date(2026, 11, 2)) == nov30
+    assert scope["_deadline"](dict(week, roll_forward="today_or_earlier"), datetime.date(2026, 10, 16), set(range(5)), {}) == datetime.date(2026, 10, 23)
+    for raw, want in [("today_or_earlier", "today_or_earlier"), ("if today or earlier", "today_or_earlier"),
+                      ("before_first_promise_day", "before_first_promise_day"), ("", ""), (None, "")]:
+        spec["account"]["bands"][0]["deadline"] = {"type": "end_of_month", "count": 0, "date": "", "roll_forward": raw}
+        assert normalize_spec(spec, API)["account"]["bands"][0]["deadline"]["roll_forward"] == want, raw
     # This or next month's end and this or next week's last business day map to their kinds; a count, "after" or "within"
     # stays unknown ("see policy").
     for kind, want in [("month_end", "end_of_month"), ("end-of-month", "end_of_month"), ("end_of_next_month", "end_of_next_month"),
