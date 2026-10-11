@@ -405,3 +405,8 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Gerçek 79 sohbet aramasının (106d0e5, 007dea1 ve b90f3e6 koşuları) değişken tabloları eski ve yeni kodla yeniden oynatıldı (scratchpad replay.py). Fark yalnız kabul turlarında, bir de PUB-13-v2'de reddedilen kredinin kayıtlı gününün silinmesinde. Tek ürünlü A aramalarında fark yok.
   - Rastgele 4000 çıkarım dizisinde çökme yok. Anlaşılmış bir ürün hiç önerilmedi, hiçbir NEXT STEP iki teklif yapmadı.
   - 71 test geçiyor.
+- Üçüncü inceleme (98a4925 üzerinde) iki kusur doğruladı. Düzeltme 9bd1edf:
+  - Günü tekrar eden "evet, 23'ü olur" müşterinin kendi günü sayılınca borç tutarıyla okunuyordu. Oysa 1. deneme taban olabilir: brief-y'nin planı "propose <floor> by <deadline>". Sabit satır 1320 dedi, müşteri 440'ı kabul etmişti. Bu "evet" geri alınınca da 1. deneme yeniden öneriliyordu.
+  - Bu "evet" artık yine kabul edilmiş 1. deneme (8d8e8d4'teki gibi) ve geri okumayı model yapıyor.
+  - İtiraz ya da "ödendi" notundan sonra söylenen gün, ürünü müşterinin kendi teklifi yapıyordu. Sebebi itiraz, ödeme ya da dolandırıcılık olan not artık ürünü kapatıyor. Zorluk notundan sonraki gün hâlâ sayılıyor.
+  - Yeniden oynatma 98a4925 ile aynı sonucu veriyor. 71 test geçiyor.
