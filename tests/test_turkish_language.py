@@ -196,6 +196,9 @@ def test_an_opening_without_a_question_is_followed_in_the_same_turn_by_the_check
     said = compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["on_enter"]["text"]
     assert said == spec["opening_line"] + " {{first_name}} {{last_name}} ile mi görüşüyorum?"
     # An opening that already asks, or a checklist question naming no call variable, leaves the opening as it is.
+    spec["policy"]["before_verification"] = "1) Açılışı birebir söyle. 2) 'First name last_name ile mi görüşüyorum?' diye sor."
+    assert compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["on_enter"]["text"] == (
+        spec["opening_line"] + " {{first_name}} {{last_name}} ile mi görüşüyorum?")
     spec["policy"]["before_verification"] = "1) Açılış söylenir. 2) 'Kiminle görüşüyorum?' diye sorulur."
     assert compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["on_enter"]["text"] == spec["opening_line"]
     spec["opening_line"] = "Hi, this is Freya Bank. Am I speaking with {{first_name}}?"

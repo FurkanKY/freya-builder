@@ -628,9 +628,16 @@ def _first_turn(spec):
     names = set(spec.get("call_variables") or []) - {spec.get("now_variable")}
     steps = str((spec.get("policy") or {}).get("before_verification") or "")
     for m in re.finditer(r"(?<!\w)['\"“‘]([^'\"“”‘’\n]{3,120}\?)['\"”’]", steps):
-        used = re.findall(r"\{\{\s*([^}]+?)\s*\}\}", m.group(1))
+        question = m.group(1)
+        used = re.findall(r"\{\{\s*([^}]+?)\s*\}\}", question)
+        if not used:
+            # Seen in another read of the same brief: 'Ad soyad ile mi görüşüyorum?', the call variables by their bare names.
+            for name in sorted(names, key=lambda n: -len(str(n))):
+                question = re.sub(r"(?<![\w{])" + re.escape(str(name)).replace("_", "[ _]") + r"(?![\w}])", "{{" + str(name) + "}}",
+                                  question, flags=re.I)
+            used = re.findall(r"\{\{\s*([^}]+?)\s*\}\}", question)
         if used and set(used) <= names:
-            return line.rstrip() + " " + m.group(1).strip()
+            return line.rstrip() + " " + question.strip()
     return line
 
 
