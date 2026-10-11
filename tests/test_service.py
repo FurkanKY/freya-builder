@@ -212,5 +212,9 @@ def test_each_service_result_is_kept_in_a_variable_the_task_shows_on_every_turn(
     serve = wf["nodes"]["serve"]
     for tool in serve["tools"]:
         name = tool["function"]["name"]
-        assert tool["response_mapping"] == [{"path": "data", "variable": f"{name}_result"}]
+        assert tool["response_mapping"] == [{"path": "data.result_text", "variable": f"{name}_result"}]
+        # the hook writes that text field: run it on a sample result
+        result = {"status": "success", "status_code": 200, "data": {"data": {"cardNumber": "540000******1234"}}}
+        exec(tool["post_process_code"], {"result": result})
+        assert "540000******1234" in result["data"]["result_text"]
         assert "{{" + name + "_result}}" in serve["task_message"]

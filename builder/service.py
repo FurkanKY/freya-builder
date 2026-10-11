@@ -279,6 +279,15 @@ RESULTS_HEAD = ("RESULTS SO FAR (the latest result of each tool in this call, ke
                 " numbers from here, character for character; a line still showing a {{...}} placeholder has not been called yet):")
 
 
+KEEP_FIELD = "result_text"
+KEEP_HOOK = ("\ntry:\n    if isinstance(result, dict) and isinstance(result.get('data'), dict):\n"
+             "        _d = result['data']\n"
+             "        _kept = {k: v for k, v in _d.items() if k not in ('what_to_do_next', '" + KEEP_FIELD + "')}\n"
+             "        try:\n            import json as _json\n            _text = _json.dumps(_kept, ensure_ascii=False)\n"
+             "        except Exception:\n            _text = str(_kept)\n"
+             "        _d['" + KEEP_FIELD + "'] = _text[:4000]\nexcept Exception:\n    pass\n")
+
+
 def result_variable(tool_name):
     return f"{tool_name}_result"
 
@@ -338,8 +347,10 @@ def compile_service(spec, api, briefs):
     _mark_copied_fields(tools, _response_fields(api))
     # Seen in chat tests: a tool result from an earlier turn is gone from the model's view, so a card picked a turn later
     # was sent as a made-up number. Each result is mapped to a variable the task shows on every turn.
+    # A whole object is not mapped (seen: the variable stayed unset); the post-hook writes the result as one text field.
     for tool in tools:
-        tool["response_mapping"] = [{"path": "data", "variable": result_variable(tool["function"]["name"])}]
+        tool["post_process_code"] = (tool.get("post_process_code") or "") + KEEP_HOOK
+        tool["response_mapping"] = [{"path": "data." + KEEP_FIELD, "variable": result_variable(tool["function"]["name"])}]
     code = ("NOW_VARIABLE = " + _py_literal(now) + "\nLANGUAGE = " + _py_literal(language) + "\n"
             + compact_code((SNIPPETS / "service_dates.py").read_text()))
     code = _copy_code(tspec, tools) + code
