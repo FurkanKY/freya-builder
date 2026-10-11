@@ -55,7 +55,7 @@ SCHEMA = """Return exactly this shape:
                "floor_field_by_type": {"<product type>": "<only when the brief's minimum amount differs by band: this band's floor, written as for the account; otherwise omit this key>"},
                "deadline": {"type": "business_days_after_today | calendar_days_after_today | fixed_date | end_of_month (the last calendar day) | last_business_day_of_month | end_of_next_month | last_business_day_of_next_month | last_business_day_this_week | last_business_day_next_week | none", "count": <n>, "date": "YYYY-MM-DD or empty"},
                "persuasion_attempts": <n>,
-               "attempt_plan": ["<one entry per payment proposal the agent makes for a product in this band after the first ask, in order, e.g. 'attempt 1: <amount> by <last_business_day_this_week>'; tokens: <amount> <floor> <deadline> <next_business_day> <last_business_day_this_week> <last_business_day_next_week>; add the brief's conditions in words>"]}]
+               "attempt_plan": ["<one entry per payment proposal the agent makes for a product in this band after the first ask, in order, e.g. 'attempt 1: <amount> by <last_business_day_this_week>'; tokens: <amount> <floor> <deadline> <next_business_day> <last_business_day_this_week> <last_business_day_next_week> <business_day_N> (the Nth business day after today, today not counted, e.g. <business_day_2>); add the brief's conditions in words>"]}]
   },
   "outcomes": {"no_reason": ["<close_call outcomes that take no reason>"]},
   "tool_descriptions": {"<tool>": "<when to CALL it, in imperative form, per the brief>"},
@@ -266,11 +266,16 @@ def validate_spec(spec, api):
             issues.append(f"band {band.get('name')} needs numeric min and max")
         # Seen in 3 of 6 reads of the public briefs: an invented token stays literal in the plan the agent must follow.
         for step in band.get("attempt_plan") or []:
-            for token in re.findall(r"<\s*([A-Za-z_]+)\s*>", str(step)):
-                if token not in tokens:
+            for token in re.findall(r"<\s*([A-Za-z_]\w*)\s*>", str(step)):
+                if token not in tokens and not re.fullmatch(r"business_day_\d+", token):
                     issues.append(f"band {band.get('name')} attempt_plan uses <{token}>, which the code cannot fill; use only"
-                                  " <" + "> <".join(tokens) + "> and say any other condition in words, e.g. 'if today is that"
-                                  " day, <last_business_day_next_week>'")
+                                  " <" + "> <".join(tokens) + "> <business_day_N> and say any other condition in words, e.g."
+                                  " 'if today is that day, <last_business_day_next_week>'")
+            # Seen in a held-out read: "<next_business_day> computed as the 2nd business day after today" fills the 1st.
+            ordinal = re.search(r"\b((?!1st)\d+(?:st|nd|rd|th)|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+business\s+day", str(step), re.I)
+            if ordinal and "<next_business_day>" in str(step):
+                issues.append(f"band {band.get('name')} attempt_plan step '{step}' names the {ordinal.group(1)} business day but uses"
+                              " <next_business_day>, which is the 1st; use <business_day_N> with that N, e.g. <business_day_2>")
     for h in spec["calendar"].get("holidays", []):
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(h.get("date") if isinstance(h, dict) else h)):
             issues.append(f"holiday {h} is not YYYY-MM-DD")

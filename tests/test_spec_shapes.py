@@ -114,10 +114,10 @@ def test_clock_variable_is_added_only_when_no_call_variable_holds_the_time():
     assert "now" not in normalize_spec(spec, API)["call_variables"]
 
 
-def _facts(spec, products):
+def _facts(spec, products, now="2026-10-21T09:00"):
     wf = compile_workflow(spec, API, BRIEFS)
     code = wf["nodes"]["account_facts"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
-    variables = {"now": "2026-10-21T09:00", "account_products": json.dumps(products)}
+    variables = {"now": now, "account_products": json.dumps(products)}
     exec(compile(code, "facts", "exec"), {"vars": variables})
     return variables["account_facts"]
 
@@ -358,3 +358,20 @@ def test_the_wrong_answer_note_states_the_briefs_own_limit():
         hook = tool(wf, "identify", "verify_identity")["post_process_code"]
         note = run_hook(hook, {"ok": True, "verified": False, "all_verified": False, "wrong_answers_left": 1})
         assert said in note and "wrong_answers_left" not in note, note
+
+
+def test_a_plan_step_on_the_nth_business_day():
+    # A held-out brief: "attempt 1 is the full amount on the 2nd business day after today"; the reader used <next_business_day>.
+    spec = json.loads(json.dumps(SPEC))
+    band = spec["account"]["bands"][0]
+    band["attempt_plan"] = ["attempt 1: <amount> by <next_business_day> computed as the 2nd business day after today"]
+    assert any("<business_day_N>" in i and "2nd" in i for i in validate_spec(spec, API))
+    band["attempt_plan"][0] = "attempt 1: <amount> by <business_day_2>"
+    assert validate_spec(spec, API) == []
+    band["attempt_plan"][0] = "attempt 1: <amount> by <next_business_day>, or within 5 business days"
+    assert validate_spec(spec, API) == []
+    band["attempt_plan"][0] = "attempt 1: <amount> by <business_day_2>"
+    # Friday 16 October 2026: the 1st business day after today is Monday 19, the 2nd is Tuesday 20.
+    out = _facts(spec, [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "days_late": band["min"], "past_due": 365}],
+                 now="2026-10-16T10:00:00")
+    assert "attempt 1: 365 by 2026-10-20 (Tuesday, 20 October 2026)" in out, out

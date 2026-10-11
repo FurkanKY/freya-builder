@@ -1141,6 +1141,9 @@ def run():
                 step = str(step)
                 for k, v in tokens.items():
                     step = step.replace("<" + k + ">", v)
+                # "the 2nd business day after today": <business_day_2>, today never counted.
+                step = re.sub(r"<business_day_(\d+)>", lambda m: _label(_nth_business_after(today, int(m.group(1)), workdays, holidays))
+                              if 0 < int(m.group(1)) < 200 else "the business day the policy names", step)
                 # The spec often numbers its own steps; the chain below numbers them again.
                 steps.append(re.sub(r"^\s*(attempt|step)\s*\d+\s*[:.)-]\s*", "", step, flags=re.I))
             chain = ["after the first ask is refused: attempt 1: " + steps[0]]
