@@ -42,7 +42,7 @@ Every question that asks the customer to pay something is a payment proposal. Ma
 Products can get different numbers of proposals. Give each product exactly the steps of its own PERSUASION PLAN, never the steps of another product; at its STOP the product is done: offer it nothing more, not its floor, a smaller amount or another date. When a PROPOSAL COUNT is given, it says which proposal comes next for each product; follow it.
 When the customer names one date for several products and it is inside some products' deadlines but after another's, the date stays for the products it fits: say so in the same sentence in which you propose the earlier date for the other product, and read back each product with its own date.
 Use the computed DATE FACTS, ACCOUNT FACTS and NAMED DAY CHECK for every date, weekday, deadline, floor and amount; do not compute them yourself. When the customer names a day, the NAMED DAY CHECK line says what that day is; apply the policy to it.
-Send dates to tools as YYYY-MM-DD and amounts as plain numbers. Say dates to the customer in words (weekday, day and month, such as "Friday, 16 October"), never as digits like 2026-10-16."""
+Send dates to tools in the format the tool field or the security question states (YYYY-MM-DD when none is stated) and amounts as plain numbers. Say dates to the customer in words (weekday, day and month, such as "Friday, 16 October"), never as digits like 2026-10-16."""
 
 # The phone model's thinking budget is small: a long private reasoning leaves no reply ("no speakable content").
 BRIEF_THINKING = """Think briefly before each reply, in a few short lines at most: which product and step you are on, the matching line of ACCOUNT FACTS or DATE FACTS, and what to say or call. Do not restate the policy to yourself. Then always give the reply."""
@@ -55,7 +55,13 @@ def _py_literal(text):
     return json.dumps(text).replace("{", "\\x7b").replace("}", "\\x7d")
 
 
-def _post_hook(tool, flag=None, answer_flag=None, complete_value=None):
+ANSWER_RIGHT = ["true", "1", "correct", "match", "matched", "pass", "passed", "valid", "verified", "yes", "ok", "success"]
+ANSWER_WRONG = ["false", "0", "incorrect", "wrong", "no_match", "nomatch", "mismatch", "not_matched", "fail", "failed", "invalid", "no",
+                "not_verified", "unverified"]
+
+
+def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_value=None):
+    right = sorted(set(ANSWER_RIGHT) | ({str(answer_value).lower()} if answer_value not in (None, "") else set()))
     lines = [
         "def _get(d, path):",
         "    for part in str(path).split('.'):",
@@ -82,12 +88,13 @@ def _post_hook(tool, flag=None, answer_flag=None, complete_value=None):
         lines += [
             f"            if str(_get(d, {flag!r})).lower() in {sorted({'true', str(complete_value).lower()} - {'none', ''})!r}:",
             "                note = 'Identity is fully verified. Continue exactly as the policy says after verification.'",
-            f"            elif str(_get(d, {(answer_flag or 'verified')!r})).lower() == 'true':",
+            # A per-answer result can be a boolean or a word (MATCH, correct); a value that is neither says nothing.
+            f"            elif str(_get(d, {(answer_flag or 'verified')!r})).strip().lower() in {right!r}:",
             "                note = 'This answer is correct. Ask the next security question as the policy says.'",
-            f"            elif _get(d, {(answer_flag or 'verified')!r}) is None:",
-            "                note = 'The service did not say whether this answer was correct, and identity is not verified yet. If the response shows fewer tries left than before, treat it as wrong; otherwise ask the next security question as the policy says.'",
-            "            else:",
+            f"            elif str(_get(d, {(answer_flag or 'verified')!r})).strip().lower() in {sorted(set(ANSWER_WRONG) - set(right))!r}:",
             "                note = 'This answer is NOT correct. Apply the policy for a wrong answer; wrong_answers_left shows what remains.'",
+            "            else:",
+            "                note = 'The service did not say whether this answer was correct, and identity is not verified yet. If the response shows fewer tries left than before, treat it as wrong; otherwise ask the next security question as the policy says.'",
             "            if d.get('hint'):",
             "                note = note + ' The service returned hint ' + str(d.get('hint')) + '; apply the policy rule for it.'",
             "        else:",
@@ -180,6 +187,21 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     schema = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
     hints = (spec.get("tool_field_hints") or {}).get(tool, {})
     call_vars = set(spec.get("call_variables") or []) | {"customer_id"}
+    # The clock or a variable named like a fact the agent settles (date, time, amount) is never baked into a tool field:
+    # a clock called 'date' would fix every promise date to the call's start.
+    from .spec import FACT_TOKENS
+    named = set(call_vars)
+    call_vars = set(v for v in call_vars if v != spec.get("now_variable") and str(v).lower() not in FACT_TOKENS)
+    # The customer key is whatever get_account needs from the call (customer_number, cif, ...), not only *_id or *_ref.
+    keys = set()
+    if tool == "verify_identity":
+        try:
+            _, get_op = operation(api, "get_account")
+            get_body = get_op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+            keys = (set(get_body.get("properties", {})) | set(x.get("name") for x in get_op.get("parameters") or [] if isinstance(x, dict))) & call_vars
+        except ValueError:
+            keys = set()
+        keys -= set(str(q.get("field")) for q in (spec.get("identity") or {}).get("questions") or [] if isinstance(q, dict))
     # Path parameters and call-variable query parameters go into the URL, where {{var}} is resolved like a body default.
     path_item = api["paths"].get(_find(api, tool)[0]) or {}
     for param in list(path_item.get("parameters") or []) + list(op.get("parameters") or []):
@@ -190,14 +212,18 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
             url = url.replace("{" + name + "}", "{{" + name + "}}")
         elif param.get("in") == "query" and name in call_vars and "{{" + name + "}}" not in url:
             url += ("&" if "?" in url else "?") + name + "={{" + name + "}}"
-    reserved = RESERVED | call_vars
+    reserved = RESERVED | named
     body = {}
     for field, prop in schema.get("properties", {}).items():
         # In the identity check only identifiers are baked; anything else there is the caller's answer.
-        identifier = field == "id" or field.endswith(("_id", "_ref")) or field == "customer_id"
+        identifier = field == "id" or field.endswith(("_id", "_ref")) or field == "customer_id" or field in keys
         if field in call_vars and (tool != "verify_identity" or identifier):
             # Call identifiers such as customer_id are baked from the call variable of the same name.
             body[field] = {"type": prop.get("type", "string"), "default": "{{" + field + "}}"}
+        elif "const" in prop or len(prop.get("enum") or []) == 1 or (not model_filled and "default" in prop):
+            # A fixed value from the API (a const, a one-value enum, or the default of a field no model fills) is sent as it is.
+            value = prop["const"] if "const" in prop else prop["enum"][0] if len(prop.get("enum") or []) == 1 else prop["default"]
+            body[field] = {"type": prop.get("type", "string"), "default": value}
         elif model_filled:
             # A placeholder with no variable behind it leaves the field to the model (verified pattern).
             name = f"{tool}_{field}" if field in reserved else field
@@ -220,9 +246,10 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
     tool_obj = {"type": "function", "config": {"timeoutMs": 12000, "maxRetries": max_retries}, "function": function,
-                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"))}
+                "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"), identity.get("answer_value"))}
     if tool == "close_call":
-        silent = [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
+        # A reason the API requires is kept for every outcome; only an empty value or a placeholder is removed then.
+        silent = [] if "reason" in schema.get("required", []) else [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
         # The model often sends its last add_note or create_promise in the same turn as close_call, and the
         # platform runs them concurrently: a close that lands first makes them fail. The goodbye is already said.
         tool_obj["pre_process_code"] = (
@@ -237,7 +264,11 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
 
 
 def _true(variable, value=None):
-    operands = ["true", "True"] + ([str(value)] if value not in (None, "", True, "true", "True") else [])
+    # The hook compares lowercased; the gate compares strings exactly, so it gets each spelling (and 1 is not True here).
+    operands = ["true", "True"]
+    if value is not None and value is not True and str(value) not in ("", "true", "True"):
+        text = str(value)
+        operands += [v for v in dict.fromkeys([text, text.lower(), text.upper(), text.capitalize()]) if v not in operands]
     return [{"variable": variable, "operator": "equals", "operand": o} for o in operands]
 
 

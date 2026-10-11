@@ -227,3 +227,72 @@ def test_last_working_day_of_the_month_is_a_business_day():
                        ("calendar_month", "calendar_month"), ("months_after_today", "months_after_today")]:
         spec["account"]["bands"][0]["deadline"] = {"type": kind, "count": 1, "date": ""}
         assert normalize_spec(spec, API)["account"]["bands"][0]["deadline"]["type"] == want, kind
+
+
+def test_a_word_valued_answer_result_and_a_numeric_completion_value():
+    api = json.loads(json.dumps(API))
+    path = next(p for p in api["paths"] if p.endswith("verify_identity"))
+    schema = api["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+    schema["properties"] = {"ok": {"type": "boolean"}, "result": {"type": "string", "enum": ["MATCH", "NO_MATCH"]},
+                            "status": {"type": "string", "enum": ["PENDING", "PASSED", "FAILED"]}}
+    spec = json.loads(json.dumps(SPEC))
+    spec["identity"].update({"complete_flag": "status", "complete_value": "passed", "answer_flag": "result"})
+    wf = compile_workflow(spec, api, BRIEFS)
+    hook = tool(wf, "identify", "verify_identity")["post_process_code"]
+    assert "This answer is correct" in run_hook(hook, {"ok": True, "result": "MATCH", "status": "PENDING"})
+    assert "NOT correct" in run_hook(hook, {"ok": True, "result": "NO_MATCH", "status": "PENDING"})
+    assert "fully verified" in run_hook(hook, {"ok": True, "result": "MATCH", "status": "PASSED"})
+    # The gate compares exactly: it takes the API's spelling too.
+    gate = [c["operand"] for c in wf["nodes"]["identify"]["transitions"][0]["condition"]["conditions"]]
+    assert "PASSED" in gate and "passed" in gate
+    # A value the spec names, and a value that is neither right nor wrong, which says nothing.
+    spec["identity"].update({"answer_value": "OK_7"})
+    hook = tool(compile_workflow(spec, api, BRIEFS), "identify", "verify_identity")["post_process_code"]
+    assert "This answer is correct" in run_hook(hook, {"ok": True, "result": "OK_7", "status": "PENDING"})
+    assert "did not say" in run_hook(hook, {"ok": True, "result": "SEE_AGENT", "status": "PENDING"})
+    # The kit's boolean flags behave as before.
+    wf = compile_workflow(SPEC, API, BRIEFS)
+    hook = tool(wf, "identify", "verify_identity")["post_process_code"]
+    assert "This answer is correct" in run_hook(hook, {"ok": True, "verified": True, "all_verified": False})
+    assert "NOT correct" in run_hook(hook, {"ok": True, "verified": False, "all_verified": False, "wrong_answers_left": 1})
+    # 1 is a value of its own, not True.
+    spec = json.loads(json.dumps(SPEC))
+    spec["identity"].update({"complete_flag": "all_verified", "complete_value": 1})
+    gate = [c["operand"] for c in compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["transitions"][0]["condition"]["conditions"]]
+    assert "1" in gate
+
+
+def test_the_call_key_the_clock_and_fixed_api_values_in_tool_bodies():
+    api = json.loads(json.dumps(API))
+    for path, item in api["paths"].items():
+        body = item["post"].get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+        if "customer_id" in body.get("properties", {}):
+            body["properties"]["customer_number"] = body["properties"].pop("customer_id")
+            body["required"] = ["customer_number" if r == "customer_id" else r for r in body.get("required", [])]
+    close = api["paths"]["/close_call"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    close["required"] = close["required"] + ["reason"]
+    close["properties"]["channel"] = {"type": "string", "enum": ["voice"]}
+    spec = json.loads(json.dumps(SPEC))
+    spec["call_variables"] = ["customer_number", "first_name", "last_name", "title", "date"]
+    spec["now_variable"] = "date"
+    spec["outcomes"]["no_reason"] = ["promise", "paid"]
+    wf = compile_workflow(spec, api, BRIEFS)
+    verify = tool(wf, "identify", "verify_identity")["function"]["parameters"]["properties"]["body"]
+    assert verify["properties"]["customer_number"]["default"] == "{{customer_number}}" and "customer_number" not in verify["required"]
+    promise = tool(wf, "negotiate", "create_promise")["function"]["parameters"]["properties"]["body"]
+    assert promise["properties"]["date"]["default"] == "{{create_promise_date}}" and "date" in promise["required"]
+    closing = tool(wf, "negotiate", "close_call")
+    assert closing["function"]["parameters"]["properties"]["body"]["properties"]["channel"]["default"] == "voice"
+    assert "[]" in closing["pre_process_code"] and "promise" not in closing["pre_process_code"]
+    assert validate_workflow(wf, api) == []
+    # A body written as allOf of parts compiles with all their fields.
+    api = json.loads(json.dumps(API))
+    body = api["paths"]["/create_promise"]["post"]["requestBody"]["content"]["application/json"]
+    whole = body["schema"]
+    body["schema"] = {"allOf": [{"type": "object", "properties": {"customer_id": whole["properties"]["customer_id"]}, "required": ["customer_id"]},
+                                {"type": "object", "properties": {k: v for k, v in whole["properties"].items() if k != "customer_id"},
+                                 "required": [r for r in whole.get("required", []) if r != "customer_id"]}]}
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    promise = tool(wf, "negotiate", "create_promise")["function"]["parameters"]["properties"]["body"]
+    assert set(promise["properties"]) == set(whole["properties"])
+    assert validate_workflow(wf, api) == []

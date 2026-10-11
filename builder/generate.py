@@ -35,7 +35,8 @@ SCHEMA = """Return exactly this shape:
     "questions": [{"field": "<verify_identity field enum value>", "ask": "<how to ask it>", "answer_format": "<format the tool needs and how to convert what callers say>"}],
     "complete_flag": "<property of the verify_identity response that shows the whole identity check passed; dotted path if nested>",
     "complete_value": "<only if complete_flag is not a boolean: its value that means passed, e.g. verified; otherwise omit>",
-    "answer_flag": "<boolean property of the verify_identity response that means this one answer was correct; dotted path if nested. When the names alone must decide: the per-answer flag is named like the check itself (verified, correct, match), the whole-check flag names the overall state (all_verified, passed, complete, identity_confirmed)>"
+    "answer_value": "<only if answer_flag is not a boolean: its value that means this answer was correct, e.g. MATCH; otherwise omit>",
+    "answer_flag": "<property of the verify_identity response that means this one answer was correct; dotted path if nested. When the names alone must decide: the per-answer flag is named like the check itself (verified, correct, match), the whole-check flag names the overall state (all_verified, passed, complete, identity_confirmed)>"
   },
   "calendar": {"business_weekdays": ["Monday", ...], "holidays": [{"date": "YYYY-MM-DD", "name": "<name or 'bank holiday'>"}],
                "closed_day_rule": "<what the brief says to do when the customer names a weekend day or holiday that is not after the deadline: next_business_day | previous_business_day | ask_again | none>"},

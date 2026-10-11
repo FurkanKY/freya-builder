@@ -35,7 +35,30 @@ def resolve_refs(api):
             return [walk(v, seen) for v in node]
         return node
 
-    return walk(api, frozenset())
+    return _merge_all_of(walk(api, frozenset()))
+
+
+def _merge_all_of(node):
+    """An object schema written as allOf of object parts becomes one schema with all their properties and required fields."""
+    if isinstance(node, list):
+        return [_merge_all_of(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    node = {k: _merge_all_of(v) for k, v in node.items()}
+    parts = node.get("allOf")
+    if isinstance(parts, list) and parts and all(isinstance(p, dict) for p in parts):
+        merged = {k: v for k, v in node.items() if k != "allOf"}
+        props, required = dict(merged.get("properties") or {}), list(merged.get("required") or [])
+        for part in parts:
+            props.update(part.get("properties") or {})
+            required += [r for r in part.get("required") or [] if r not in required]
+            for k, v in part.items():
+                if k not in ("properties", "required"):
+                    merged.setdefault(k, v)
+        merged["properties"], merged["required"] = props, required
+        merged.setdefault("type", "object")
+        return merged
+    return node
 
 
 def _text(value):

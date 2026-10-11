@@ -97,6 +97,8 @@ def walk(value, location="workflow"):
 
 
 def validate_workflow(workflow, api):
+    from .spec import resolve_refs
+    api = resolve_refs(api)
     issues = []
     nodes = workflow.get("nodes")
     if not isinstance(nodes, dict) or not nodes:
