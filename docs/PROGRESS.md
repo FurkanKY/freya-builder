@@ -490,3 +490,10 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - dc77d5d, c60c693: Pazar 12:50–13:05 arasında staging çöktü (sohbet 60 s'de 504 verdi). İki holdout derlemesi, doğrulama isteği 30 s'lik istemci zaman aşımına üç kez takıldığı için düştü.
   - Zaman aşımı ve kopan bağlantı artık 503 gibi, bütçe elverdikçe ve artan aralıklarla yeniden deneniyor.
   - İstek, ağ geçidinin süresi olan 60 s'ye kadar bekliyor. Finalde bütün takımlar 20:00'de derleyecek.
+- Ölçüm (66aba73, public-b v33, public-a v10), Pazar 13:13–13:41. Staging 13:18'de yeniden çöktü (sohbet 60 s'de 504/502); ölçüm durduruldu, kalan vakalar platform açılınca koşulacak.
+  - Platform hatasıyla kesilmeyen her koşu geçti: A 7/7 (PUB-01, 02, 03, 06, 07, 08, 09), B PUB-11 r2 ve PUB-13 r1, varyantlar PUB-13-v1 ve PUB-13-v2.
+  - PUB-11 r1'deki yanlış gün (bugün, 14 Ekim) dallanmadan geliyor, koddan değil. 504 sonrası yeniden gönderilen satır konuşmayı dallandırınca platform değişkenleri daha önceki bir hâle döndürdü: `own_offer_days` boşaldı, read-back gün olmadan yazıldı, model "bugün" dedi. Dallanmasız koşuda (r2) gün onaydan sonra da duruyor.
+  - PUB-11-v1'deki beş kez tekrarlanan "640 by Friday" de aynı: her dallanma aynı noktaya dönüyor ve ajan aynı teklifi yeniden yapıyor.
+  - 13:42–14:10 ve 14:57'den sonra yeniden denendi; staging bu aralıkta da 500/503/504 verdi, uzun aramalar (PUB-12, varyantlar) her seferinde kesildi. Yalnız PUB-05 tamamlandı ve geçti (A 8/8).
+  - Sabit teklif satırı platformda hiç tetiklenmedi: müşteri personaları reddederken bir gün de söylüyor ("not by Friday or any other date"), bu da satırı modele bırakıyor. Satırı sınamak için yalın retli iki vaka (`plain-bc.json`) ve claude CLI kullanmayan, cümleleri sabit bir müşteriyle konuşan bir betik (`scripted.py`) hazırlandı; CLI penceresinin dışında da koşabiliyor.
+  - Yedek: `no-fixed-line` dalı (5591616) b09a6b8 ve 66aba73'ü geri alıyor, Cuma adımı ve zaman aşımları kalıyor; 97 test geçiyor.
