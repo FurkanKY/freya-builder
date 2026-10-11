@@ -1225,7 +1225,9 @@ def run():
             # Seen live: on the turn of the last refusal the model kept the pattern of its earlier proposals and made one more
             # for a finished product, whatever the step said. A fixed line has no pattern to follow. Only once per call, only
             # on a plain refusal turn, and never after the customer named an amount of their own (the line reads the amount owed).
-            if not said and prev_done != "yes" and changed and not day_named and vars.get("amount_named") != "yes":
+            # The fixed line is English; an agent that speaks another language reads back in its own words.
+            english = str(spec.get("language") or "English").strip().lower().startswith(("en", "eng"))
+            if english and not said and prev_done != "yes" and changed and not day_named and vars.get("amount_named") != "yes":
                 say = _readback_line(spec, items)
             new_step = ""
             if say:

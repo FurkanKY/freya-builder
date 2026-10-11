@@ -7,6 +7,7 @@ A proxy for the platform simulation (gemini persona and judge), not the same thi
 Usage (from the repo root):
   chat_cases.py <workflow_id> [--brief A|B] [--only PUB-01,PUB-12] [--cases file.json] [--reps 3] [--style talkative]
                 [--workers 5] [--out results.json] [--infra-retries 2]
+A case may set "now_override" to call its practice customer on another day ("variables.now" should then match it).
 Never prints secrets."""
 import argparse, json, os, re, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -119,6 +120,9 @@ def run_case(wid, case, style, outdir, tag):
         return {"id": case["key"], "tag": tag, "pass": False, "infra": True, "failed": [], "call_id": None, "tools": [],
                 "note": "not run: " + LIMIT[0]}
     variables = http("/v1/practice/sessions", {"case": case["id"]})["variables"]
+    if case.get("now_override"):
+        # A held-out case can call the same practice customer on another calendar day.
+        variables = dict(variables, now=case["now_override"])
     persona = persona_for(case, {"identity": case["identity"]}, style)["prompt"]
     call_id, convo, msg, note = None, [], "Hello?", ""
     for turn in range(40):

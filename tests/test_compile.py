@@ -1126,3 +1126,16 @@ def test_the_read_back_question_is_never_an_identity_question():
     scope = {"vars": {}}
     exec(compile(code, "facts", "exec"), scope)
     assert scope["_confirm_question"](scope["_spec"]()) == "Do you confirm this promise?"
+
+
+def test_the_fixed_read_back_line_is_only_for_an_english_agent():
+    spec, products = _three_products_spec()
+    for language, mode in (("English", "say"), ("Spanish", "llm")):
+        spec["language"] = language
+        wf = compile_workflow(spec, API, BRIEFS)
+        out = run_facts(wf, {"now": "2026-10-14T11:00", "account_products": json.dumps(products), "named_day_words": "Friday",
+                             "dated_products": "credit card", "refused_products": "personal loan, car loan", "proposed_products": "all"})
+        for _ in range(2):
+            out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan", named_day_words="none", dated_products="none"))
+        out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan", named_day_words="none", dated_products="none"))
+        assert out["negotiation_done"] == "yes" and out["wrap_up_mode"] == mode, (language, out["wrap_up_mode"])
