@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from .compile import BY_OPERATION_ID, HTTP_METHODS, extra_tools
 from .documents import collect
+from .jsonfix import loads_object
 from .runtime import digest
 
 # The jobs the compiler gives the agent a tool for, by the names it uses for them.
@@ -73,15 +74,37 @@ def contract_prompt(documents, api, issues=None, previous=None):
     return "\n\n".join(parts)
 
 
+OPERATION_KEYS = {"operationId", "summary", "description", "requestBody", "responses", "parameters", "tags", "deprecated",
+                  "security", "servers", "callbacks", "externalDocs"}
+
+
+def contract_shape_problems(data):
+    """Structural problems of a contract read, for choosing where a dropped bracket belonged: path keys that are not paths,
+    path-item keys that are not methods, operation and response keys out of place."""
+    api = data.get("openapi") if isinstance(data, dict) else None
+    if not isinstance(api, dict) or not isinstance(api.get("paths"), dict):
+        return 100
+    n = 0 if isinstance(data.get("documents"), list) else 1
+    for key, item in api["paths"].items():
+        if not str(key).startswith("/") or not isinstance(item, dict):
+            n += 1
+            continue
+        for method, op in item.items():
+            if method not in HTTP_METHODS:
+                n += method not in ("parameters", "summary", "description", "servers")
+                continue
+            if not isinstance(op, dict):
+                n += 1
+                continue
+            n += sum(1 for k in op if k not in OPERATION_KEYS and not str(k).startswith("x-"))
+            n += sum(1 for code in (op.get("responses") or {}) if not re.fullmatch(r"[1-5](\d\d|XX)|default", str(code)))
+    # Among readings with no misplaced key, the one that keeps the most operations at the path level is the intended one.
+    return n * 1000 - len(operations(api))
+
+
 def parse_object(text):
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    start, end = text.find("{"), text.rfind("}")
-    data = json.loads(text[start:end + 1] if start >= 0 else text)
-    if not isinstance(data, dict):
-        raise ValueError("output is not a JSON object")
-    return data
+    # A long answer sometimes drops a closing bracket; the schema's top-level keys are put back where they belong.
+    return loads_object(text, keys=re.findall(r'^ "([a-z_]+)"', CONTRACT_SCHEMA, re.M), score=contract_shape_problems)
 
 
 def operations(api):

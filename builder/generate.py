@@ -4,6 +4,7 @@ The model has no tools. The coordinator owns all file and API actions.
 """
 import asyncio
 import json
+from .jsonfix import loads_object
 import re
 import shutil
 import time
@@ -129,8 +130,7 @@ def parse_response(text):
     text = text.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    start, end = text.find("{"), text.rfind("}")
-    data = json.loads(text[start:end + 1] if start >= 0 else text)
+    data = loads_object(text, keys=("spec", "rules", "coverage"))
     if not isinstance(data, dict) or not isinstance(data.get("spec"), dict):
         raise ValueError("Model output must contain spec")
     if not isinstance(data.get("rules"), list) or not data["rules"]:

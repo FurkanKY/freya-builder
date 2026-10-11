@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .compile import (CODE_BUDGET, HTTP_METHODS, NEGOTIATE_REASONING, SNIPPETS, _alike, _body_schema, _copy_code,
                       _model_transition, _params, _py_literal, _tool_base, api_tool, compact_code)
+from .jsonfix import loads_object
 from .generate import ask_model, document_language, is_secret_error
 from .spec import language_name, resolve_refs
 
@@ -167,15 +168,8 @@ def service_prompt(inputs, previous=None, issues=None):
 
 
 def parse_spec(text):
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    start, end = text.find("{"), text.rfind("}")
-    # strict=False: a multi-line script often comes back with raw line breaks inside its strings.
-    data = json.loads(text[start:end + 1] if start >= 0 else text, strict=False)
-    if not isinstance(data, dict):
-        raise ValueError("output is not a JSON object")
-    return data
+    # Raw line breaks inside strings are accepted; a dropped closing bracket is repaired.
+    return loads_object(text, keys=re.findall(r'^ "([a-z_]+)"', SERVICE_SCHEMA, re.M))
 
 
 def _text(value):
