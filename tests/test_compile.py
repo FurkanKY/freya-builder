@@ -51,9 +51,32 @@ def test_the_identity_phase_sees_this_calls_values():
     assert "Ask 'Am I speaking with {{title}} {{last_name}}?', or for {{first_name}}; offer {floor} never." in task
     assert all(f"- {v}: {{{{{v}}}}}" in task for v in ("first_name", "last_name", "title"))
     assert f"- {spec['now_variable']}:" not in task and "- customer_id:" not in task
-    # A call variable such as an amount stays out of the identity phase.
-    spec["call_variables"] = spec["call_variables"] + ["amount_due"]
-    assert "- amount_due:" not in compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["task_message"]
+    # A call variable such as an amount stays out of the identity phase, even when the identity policy names it.
+    spec["call_variables"] = spec["call_variables"] + ["amount_due", "agent_name", "phone_last4"]
+    spec["policy"]["before_verification"] = "Never say the amount ({amount_due}) before verification."
+    task = compile_workflow(spec, API, BRIEFS)["nodes"]["identify"]["task_message"]
+    assert not any("{{" + v + "}}" in task for v in ("amount_due", "agent_name", "phone_last4"))
+    assert "Never say the amount ({amount_due}) before verification." in task
+    # Whatever the brief calls the person: the name is in reach even when no variable has 'name' in it.
+    other = json.loads(json.dumps(SPEC))
+    other["call_variables"], other["now_variable"] = ["ref", "customer", "gender", "as_of"], "as_of"
+    other["opening_line"] = "Hello, may I speak to [Customer]?"
+    other["policy"]["before_verification"] = "Ask for the customer by name."
+    other["identity"]["questions"][0]["ask"] = "{customer}, what is your date of birth?"
+    wf = compile_workflow(other, API, BRIEFS)
+    task = wf["nodes"]["identify"]["task_message"]
+    assert "- customer: {{customer}}" in task and "- gender: {{gender}}" in task and "- ref:" not in task and "- as_of:" not in task
+    assert "{{customer}}, what is your date of birth?" in task
+    assert wf["nodes"]["identify"]["on_enter"]["text"] == "Hello, may I speak to {{customer}}?"
+
+
+def test_policy_placeholders_for_read_back_facts_stay_placeholders():
+    # A clock variable called 'date' must not turn the read-back template's '<date>' into today's date.
+    spec = json.loads(json.dumps(SPEC))
+    spec["call_variables"], spec["now_variable"] = spec["call_variables"] + ["date"], "date"
+    spec["policy"]["after_verification"] = "Read back as: '<product>, <amount> on <date>.' Address them as {title} {last_name}."
+    task = compile_workflow(spec, API, BRIEFS)["nodes"]["negotiate"]["task_message"]
+    assert "Read back as: '<product>, <amount> on <date>.' Address them as {{title}} {{last_name}}." in task
 
 
 def test_close_call_drops_reason_for_reasonless_outcomes():
@@ -95,6 +118,10 @@ def test_spec_validation_rejects_fields_outside_the_api():
     assert any("mothers_maiden_name" in i for i in issues)
     assert any("balance" in i for i in issues)
     assert any("nickname" in i for i in issues)
+    # A placeholder that is no call variable would be read out by text-to-speech.
+    bad["opening_line"] = "Hello, may I speak to [client name]?"
+    assert any("[client name]" in i for i in validate_spec(bad, API))
+    assert not [i for i in validate_spec(SPEC, API) if "placeholder" in i]
 
 
 def test_facts_read_the_spec_named_clock_variable():

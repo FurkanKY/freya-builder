@@ -98,10 +98,37 @@ def _product_types(api, list_field, type_field):
         return []
 
 
+PLACEHOLDER = re.compile(r"(?<!\{)\{\s*([A-Za-z][\w ]*?)\s*\}(?!\})|<\s*([A-Za-z][\w ]*?)\s*>|\[\s*([A-Za-z][\w ]*?)\s*\]")
+
+
 def _call_templates(text, call_vars):
-    """{first_name} or <first_name> for a call variable becomes the platform's {{first_name}}; anything else is left as it is."""
-    return re.sub(r"(?<!\{)\{\s*(\w+)\s*\}(?!\})|<\s*(\w+)\s*>",
-                  lambda m: "{{" + (m.group(1) or m.group(2)) + "}}" if (m.group(1) or m.group(2)) in call_vars else m.group(0), text)
+    """{first_name}, <First Name> or [first_name] for a call variable becomes the platform's {{first_name}}; anything else
+    is left as it is."""
+    by_key = {str(v).lower(): v for v in call_vars}
+
+    def one(m):
+        name = by_key.get(re.sub(r"\s+", "_", (m.group(1) or m.group(2) or m.group(3)).strip()).lower())
+        return "{{" + name + "}}" if name else m.group(0)
+    return PLACEHOLDER.sub(one, text)
+
+
+# Who the call is for, whatever the brief calls it (first/last, given/family, customer, gender). Everything else a call
+# variable can hold (an amount, a security answer, an id, the clock, the assistant's own name) stays out of reach until
+# the identity is verified.
+WHO = re.compile(r"name|title|salutation|honorific|surname|forename|given|family|gender|pronoun|holder", re.I)
+NOT_WHO = re.compile(r"agent|bot|assistant|bank|product|campaign|company|operator|brand", re.I)
+CALL_DATA = re.compile(r"amount|balance|due|owed|arrear|overdue|debt|past|late|limit|minimum|instal|account|loan|card|payment|band|"
+                       r"segment|risk|score|birth|dob|phone|mobile|postcode|post_code|zip|iban|ssn|pin|password|secret|answer|"
+                       r"address|email|date|time|today|day|ref|number|^id$|_id$", re.I)
+# Placeholders the policy uses for the facts it reads back; a call variable of that name is not filled into the policy.
+FACT_TOKENS = {"amount", "floor", "deadline", "date", "day", "weekday", "product", "time", "next_business_day"}
+
+
+def who_variables(spec):
+    """The call variables that say who this call is for."""
+    now = spec.get("now_variable")
+    return [v for v in spec.get("call_variables") or [] if v != now and not NOT_WHO.search(v)
+            and (WHO.search(v) or not CALL_DATA.search(v))]
 
 
 def normalize_spec(spec, api):
@@ -120,11 +147,12 @@ def normalize_spec(spec, api):
     if spec.get("opening_line"):
         # A brief's single-brace {first_name} would otherwise be spoken literally.
         spec["opening_line"] = _call_templates(spec["opening_line"], call_vars)
+    who = set(who_variables(spec))
     identity = spec.get("identity") if isinstance(spec.get("identity"), dict) else {}
     questions = []
     for q in identity.get("questions") or []:
         if isinstance(q, dict):
-            questions.append({k: _text(v) for k, v in q.items()})
+            questions.append({k: _call_templates(_text(v), who) if k in ("ask", "answer_format") else _text(v) for k, v in q.items()})
         elif q not in (None, ""):
             questions.append({"field": str(q), "ask": "", "answer_format": ""})
     identity["questions"] = questions
@@ -191,6 +219,9 @@ def normalize_spec(spec, api):
         spec[section] = fixed
     policy = spec.get("policy") if isinstance(spec.get("policy"), dict) else {"after_verification": _text(spec.get("policy"))}
     # Seen live: a read wrote "Ask 'Am I speaking with {title} {last_name}?'", the platform filled nothing in and the agent
-    # asked every customer for the example name in the brief.
-    spec["policy"] = {k: _call_templates(_text(v), call_vars) for k, v in policy.items()}
+    # asked every customer for the example name in the brief. Text the identity phase sees (its own policy, and the
+    # precedence and closing rules in the system prompt) gets only who the call is for; the text after verification any
+    # call variable except the clock and one named like a read-back placeholder ('<date>', '<amount>').
+    after = set(v for v in call_vars if v != now and v.lower() not in FACT_TOKENS)
+    spec["policy"] = {k: _call_templates(_text(v), after if k == "after_verification" else who) for k, v in policy.items()}
     return spec
