@@ -436,3 +436,20 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Sabit geri okuma satırının sorusu, kimlik bölümündeki bir sorudan ("Can you confirm your date of birth?") alınabiliyordu. Artık önce doğrulama sonrası ve kapanış metinleri aranıyor, doğrulama öncesi hiç aranmıyor.
   - Bantlar ürün türüne göre olabiliyor (`band.product_types`), bant kendi tabanını verebiliyor (`band.floor_field_by_type`). Metin olarak gelen bir kova ("11-45") ilk sayısıyla, adıyla gelen kova bant adıyla eşleniyor. Hiçbir banda düşmeyen ürün en az deneme sayısını alıyor; önceden sınırsızdı (99).
   - "Söz tarihi yarından önce olamaz" kuralı (`calendar.earliest_promise_day`, genx ve geny'de var). Takvim bugünü "çok erken" diye gösteriyor; "bu haftanın son iş günü" bugünse plan gelecek haftanınkini öneriyor; bugünkü gün olduğu gibi geri okunmuyor.
+- Üçüncü toplu düzeltme 6be7c7c'de. fc87ced: sabit İngilizce geri okuma satırı yalnız İngilizce konuşan bir ajanda kullanılıyor. Held-out bir vaka arama gününü (`now_override`) değiştirebiliyor.
+
+## Aşama 18 — Pazar 10:50–: ezber testi (held-out brief'ler) ve ölçüm
+- Public sonuçların ezberden gelmediğini görmek için builder'ın hiç görmediği iki brief yazıldı (Fable yazarları, ayrı doğrulayıcılar):
+  - H1 (`tests/fixtures/holdout1/`): A+B'nin aynı kuralları, ham banka malzemesi biçiminde (posta zinciri, politika özeti, memo, kod listesi). Kit'in A ve B vakalarıyla ölçülüyor.
+  - H2 (`tests/fixtures/holdout2/`): başka kurallar, aynı practice müşterileri; 13 uyarlanmış vaka, bazıları başka bir arama gününde.
+- Ölçüm (fc87ced, public-b v29, public-a v6; okumaların üçü de 82 alanda aynı): B 2/3 vaka, varyantlar 4/6, A 9/10, tek tekrarla.
+  - PUB-11: müşteri "üçünü de cuma öderim" dedi; adım verilmediği için model önce "tam tutar mı?" diye sordu, sonra geri okudu: iki onay.
+  - PUB-11-v2, PUB-13-v2: kod adımı doğru verdi (kişisel kredi için 1. deneme, sonra STOP), model ise adımı atladı ya da STOP'tan sonra taban önerdi.
+  - PUB-05: müşteri işini kaybettiğini söyledi, desteği reddetti, "daha fazla süre?" diye sordu; model ikna denemesi yaptı.
+- 64ca9f3: "yarından itibaren" kuralında hafta sonuna düşen son tarih bugüne çekilmiyor.
+- 6f8afd4: ürün alanları iç içe bir nesnede olabiliyor (`balance.past_due`), tutarlar metin olabiliyor ("EUR 1,234.50").
+- afa52fa:
+  - Her ürüne kabul edilen bir gün verildiği turda sıradaki adım geri okuma. Yalnız gün yeniyse: aynı günü tekrar eden "evet, onaylıyorum" ikinci bir geri okuma doğurmuyor.
+  - Sıradaki adım (`next_step`) müzakere komutunun en sonunda tekrarlanıyor; kapanış düğümünde bu yöntem canlıda işe yaramıştı.
+  - Zorluk (hastalık, ölüm, iş kaybı) söylendiğinde politikanın kuralı aramanın geri kalanında ikna planından önce geliyor.
+  - Eski 79 aramanın yeniden oynatılmasında fark yalnız PUB-11/PUB-13'te gün verilen turlarda. Fuzz: sorun yok. 87 test geçiyor.
