@@ -177,13 +177,16 @@ def test_generate_service_falls_back_to_the_documents_when_no_read_is_usable(tmp
 
 
 def test_an_opening_with_unfilled_slots_is_not_spoken_as_is_and_the_agent_starts_at_the_first_script_step():
-    from builder.service import TOOL_START, spoken_opening
+    from builder.service import ENTRY_PROMPT, SERVICE_FRAME, TOOL_START, spoken_opening
     variables = ["customerNumber", "now"]
     assert spoken_opening("Hello, this is the bank.", variables) == "Hello, this is the bank."
     assert spoken_opening("Hello {{customerNumber}}.", variables) == "Hello {{customerNumber}}."
     for line in ["Your card ending <last4> owes …", "Which card? For example [card name].", "Total {amount}.", "Hello {{name}}."]:
         assert spoken_opening(line, variables) == ""
-    assert TOOL_START.startswith("The call starts with you")
+    # the entry turn cannot call tools: it only says the caller is being checked, and step 1 starts on their next message
+    assert "Do not call, name or write any tool" in ENTRY_PROMPT
+    assert "start at SCRIPT step 1 and call its tool" in TOOL_START
+    assert "Never write a tool name, '_call'" in SERVICE_FRAME and "a turn ends only with a question" in SERVICE_FRAME
 
 
 def test_service_tools_wait_longer_than_the_collection_default_for_a_slow_answer():
