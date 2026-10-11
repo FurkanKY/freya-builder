@@ -306,3 +306,27 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Varyant PUB-11 r2'de gerçek bir hata vardı: "kartı ve krediyi ödemem, araç kredisini konuşabiliriz" cevabından sonra araç kredisi için "bugün" yeniden soruldu.
 - Düzeltme (01729a7): ilk cevabın açık bıraktığı ürün sayılmıyor, çünkü cevabı müşterinin kendi verdiği bir gün olabilir. Ama satırı "ilk soru onu da kapsadı, tekrar sorma; müşteri gün ya da tutar vermezse sıradaki teklif 1. deneme: …" diyor.
 - `scripts/chat_cases.py` artık platform hatasıyla kapanmadan kesilen koşuları INFRA diye işaretliyor, bir dakika sonra yeniden koşturuyor (`--infra-retries 2`) ve puana katmıyor.
+- 01729a7, sürüm 24, sohbet ölçümü (Pazar 01:30–02:30):
+  - AB × 3: 13 vakanın 10'u her tekrarda geçti.
+    - PUB-05 1/3: tek ürünlü A müşterisine "hardship" notu yazıldı (A+B tek ajanda birleşince "Brief B only" kapsamı çağrıda görülemiyor).
+    - PUB-10 1/3: yargıç, başarısız create_promise'ın yeniden denemesini çift kayıt sandı; başarısız çağrılar dökümde görünmüyordu. Döküm artık `function_call_error` olaylarını da gösteriyor.
+    - PUB-12 1/3: son reddin turunda model, temiz plan satırlarına rağmen bitmiş ürüne bir teklif daha yaptı (önceki tekliflerin kalıbını kopyalama).
+  - Varyantlar × 3: 5 vakanın 1'i her tekrarda geçti (PUB-11 2/3, PUB-12-v2 1/3, PUB-13-v1 2/3, PUB-13-v2 2/3).
+- Fable 5.1 ile üçüncü danışma (PUB-12, kalıp kopyalama): öneri, son reddin turunda geri okumayı modelden almak ve kodun kurduğu sabit bir satırı söyletmek.
+- Düzeltme (bb5fd76): `check_date`, kapanış adımı tek bir geri okumaysa ve müşteri kendi tutarını söylememişse `wrap_up_readback` düğümüne gidiyor. Bu düğümün girişi `tts` ("Understood. Let me read back your promise: … Do you confirm?"), yani o tur model çağrısı yok. Satır çağrı başına bir kez söyleniyor; sonraki turlarda adım "geri okuma söylendi, evet gelirse create_promise" diyor. Onay sorusu politikada tırnak içinde varsa oradan alınıyor. Yeni çıkarım alanı `named_amount_words`, müşteri kendi tutarını söylediyse sabit satırı kapatıyor.
+- bb5fd76, sürüm 25: PUB-12 × 4 sohbet, 4/4 geçti; dört koşuda da sabit satır birebir söylendi, "evet"ten sonra create_promise ve iki not, sonra close_call.
+- Sürüm 24'ün beş başarısız koşusu için teşhis iş akışı (her vaka için teşhis ve ayrı bir eleştirmen; yalnız okuma):
+  - PUB-11 r3, kod hatası: "bugün ödeyemem, kartı da krediyi de" cevabında `_count_refusals`'ın geri dönüş dalı, reddedilen "bugün"ü araç kredisinin müşteri günü sayıyordu; kapanış da 14 Ekim'i müşterinin sözü diye geri okudu.
+  - PUB-12-v2: ilk soru açıkken müşteri yalnızca "neden hepsi bugün?" diye sordu; hiçbir şey sayılmadı, planda adım yoktu ve model bugünü yeniden sordu.
+  - PUB-13-v1 r3: ölçüm aracının hatası. Sunucu turu bitirdiği halde 504 döndü; araç müşteri satırını yeniden gönderdi, satır iki kez işlendi ve ajanla müşteri farklı konuşmalar gördü.
+  - PUB-13-v2 r3: sayaç doğruydu; model sıradaki teklif yerine kartın gününü erkenden geri okudu.
+  - PUB-05: A+B birleşiminin yapaylığı. Finalde her brief ayrı derleniyor; builder değişikliği yapılmadı.
+- Düzeltme (23c6556):
+  - ilk soruya verilen "bugün ödeyemem" artık hiçbir ürünün müşteri günü olmuyor; `named_day_words` ve `dated_products` açıklamaları da "ödeyemem dediği gün" ve "yalnızca sorduğu ürün" için aynı şeyi söylüyor;
+  - bir ürün STOP'a gelince, ilk cevabın açık bıraktığı ürünün 1. denemesi NEXT STEP olarak yazılıyor;
+  - yeni çıkarım alanı `asked_back` (enum yes/no): ilk soru açıkken müşteri yalnızca soru sorduysa tur sayaca gidiyor (`first_ask_open`), plan "soruyu tek cümleyle cevapla, aynı mesajda ilk ürünün 1. denemesini yap" diyor;
+  - bir ürünün teklifi yazılırken başka ürüne müşterinin verdiği gün bekliyor: "no read-back and no confirmation question for it in this message"; bütün sözler sonda birlikte geri okunuyor;
+  - kapanış düğümü not yazmayı politikaya bağladı ("when the policy asks for a note");
+  - `chat_cases.py`: platform hatası alan her başarısız koşu INFRA sayılıyor ve yeniden koşturuluyor.
+  - 65 test geçiyor.
+- A vakalarının ölçümü artık yalnızca brief-a.md ile derlenen public-a ajanında yapılıyor (finaldeki gibi tek brief, tek ajan); B vakaları ve varyantlar A+B ile derlenen public-b ajanında ölçülüyor.
