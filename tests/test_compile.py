@@ -1307,3 +1307,284 @@ def test_the_code_node_fits_the_platforms_limit():
     # A string that is not a docstring keeps its lines and its indentation.
     text = 'def f():\n    """Doc."""\n    # note\n    x = """a\n    b"""  # tail\n\n    return x\n'
     assert C.compact_code(text) == 'def f():\n x = """a\n    b"""\n return x\n'
+
+
+def _texts(wf):
+    """Everything the dialogue model reads except the facts code: prompts, entry lines, tool descriptions and hooks."""
+    out = [wf["system_prompt"]]
+    for _, item in walk(wf):
+        out += [str(item[k]) for k in ("task_message", "prompt", "text") if isinstance(item.get(k), str)]
+        if isinstance(item.get("function"), dict) and item["function"].get("handler") == "__function__:api_call":
+            out += [item["function"].get("description") or "", item.get("post_process_code") or "", item.get("pre_process_code") or ""]
+    return "\n".join(out)
+
+
+def _tool_names(wf):
+    return {t["function"]["name"] for node in wf["nodes"].values() for t in node.get("tools") or []}
+
+
+def test_operation_id_comes_before_a_path_tail_and_a_case_api_uses_only_operation_ids():
+    from builder.compile import BY_OPERATION_ID, TOOL_NAMES, _find
+    assert all(_find(API, t) == ("/" + t, "post") for t in TOOL_NAMES)
+    api = json.loads(json.dumps(API))
+    api["paths"]["/odeme/kapat"] = {"post": {"operationId": "close_call"}}
+    assert _find(api, "close_call") == ("/odeme/kapat", "post")
+    api[BY_OPERATION_ID] = True
+    assert _find(api, "add_note") == (None, None)
+
+
+def test_a_bank_without_an_operation_for_a_role_still_compiles():
+    for role in ("close_call", "get_account", "create_promise", "add_note", "schedule_callback", "transfer_to_agent", "verify_identity"):
+        api = json.loads(json.dumps(API))
+        api["paths"].pop("/" + role)
+        wf = compile_workflow(SPEC, api, BRIEFS)
+        assert validate_workflow(wf, api) == [], role
+        assert role not in _tool_names(wf), role
+        text = _texts(wf)
+        if role in ("close_call", "get_account", "create_promise", "add_note", "verify_identity"):
+            assert role not in text, (role, text[text.find(role) - 200:text.find(role) + 100])
+        nodes = wf["nodes"]
+        if role == "close_call":
+            # The model ends the call itself: the documented tool-call transition, on every node that talks.
+            assert "then end the call: call transition_to_hang_up" in wf["system_prompt"]
+            for name in ("identify", "negotiate", "wrap_up", "wrap_up_readback", "say_proposal"):
+                end = [t for t in nodes[name]["transitions"] if t["target_node"] == "hang_up"]
+                assert len(end) == 1 and end[0]["is_tool_call"] is True and end[0]["condition"]["operator"] == "matches_intent", name
+                assert end[0]["condition"]["description"] and end[0]["description"]
+            assert "then say the closing words and end the call." in nodes["wrap_up"]["task_message"]
+        if role == "get_account":
+            assert "load_account" not in nodes and nodes["identify"]["transitions"][0]["target_node"] == "account_facts"
+            assert "- first_name: {{first_name}}" in nodes["negotiate"]["task_message"]
+        if role == "add_note":
+            assert "This bank has no note tool: never say a note was made." in wf["system_prompt"]
+        if role == "create_promise":
+            assert "after a clear yes the promise is agreed;" in nodes["wrap_up"]["task_message"]
+        if role == "verify_identity":
+            gate = nodes["identify"]["transitions"][0]
+            assert gate["target_node"] == "load_account" and gate["is_tool_call"] is True
+            assert "call transition_to_load_account" in nodes["identify"]["task_message"]
+    # Nothing at all but an account read: still a workflow, closed by the model.
+    api = json.loads(json.dumps(API))
+    api["paths"] = {"/get_account": api["paths"]["/get_account"]}
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    assert validate_workflow(wf, api) == [] and _tool_names(wf) == set()
+
+
+def _rest_api():
+    api = json.loads(json.dumps(API))
+    paths = api["paths"]
+    get = paths.pop("/get_account")["post"]
+    get.pop("requestBody", None)
+    get["parameters"] = [{"name": "musteriNo", "in": "path", "required": True, "schema": {"type": "string"}},
+                         {"name": "Authorization", "in": "header", "required": True, "schema": {"type": "string"}},
+                         {"name": "X-Kanal", "in": "header", "required": True, "schema": {"type": "string", "enum": ["IVR"]}},
+                         {"name": "tur", "in": "query", "required": True, "schema": {"type": "string", "const": "kart"}}]
+    paths["/musteri/{musteriNo}/ekstre"] = {"get": dict(get, operationId="get_account")}
+    promise = paths.pop("/create_promise")["post"]
+    promise["parameters"] = [{"name": "kart_no", "in": "path", "required": True, "description": "Kartın son dört hanesi", "schema": {"type": "string"}},
+                             {"name": "kanal", "in": "query", "schema": {"type": "string"}}]
+    paths["/kart/{kart_no}/odeme-sozu"] = {"post": dict(promise, operationId="create_promise")}
+    return api
+
+
+def test_path_query_and_header_parameters_of_a_rest_contract():
+    api = _rest_api()
+    spec = json.loads(json.dumps(SPEC))
+    spec["call_variables"] = spec["call_variables"] + ["musteri_no"]
+    wf = compile_workflow(spec, api, BRIEFS)
+    assert validate_workflow(wf, api) == []
+    # The account read runs without a model: the call variable named like the path parameter fills it. The first node
+    # copies it to the parameter's name, so the platform fills {{musteriNo}}; the pre-hook fills it when it is left as it is.
+    load = wf["nodes"]["load_account"]["pre_actions"][0]
+    params = load["function"]["parameters"]["properties"]
+    assert params["url"]["default"].endswith("/musteri/{{musteriNo}}/ekstre?tur=kart") and params["method"]["default"] == "GET"
+    assert "Authorization" not in params["headers"]["properties"] and params["headers"]["properties"]["X-Kanal"]["default"] == "IVR"
+    variables = {"musteri_no": "12 34", "now": "2026-10-08T10:00:00"}
+    run_prepare = wf["nodes"]["prepare"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    assert "{{" not in run_prepare and "}}" not in run_prepare
+    exec(compile(run_prepare, "prepare", "exec"), {"vars": variables})
+    assert variables["musteriNo"] == "12 34" and variables.get("date_facts")
+    assert "musteriNo" not in json.dumps(compile_workflow(SPEC, API, BRIEFS)["nodes"]["prepare"])
+    config = {"url": params["url"]["default"], "method": "GET", "headers": {}, "body": {}}
+    exec(load["pre_process_code"], {"config": config, "vars": {"musteri_no": "12 34"}})
+    assert config["url"].endswith("/musteri/12%2034/ekstre?tur=kart")
+    # Without the variable table the hook leaves the request as it is and never raises.
+    config = {"url": params["url"]["default"], "method": "GET", "headers": {}, "body": {}}
+    exec(load["pre_process_code"], {"config": config})
+    assert config["url"] == params["url"]["default"]
+    # The promise's card number is the model's: a body field the pre-hook moves into the path; the query likewise.
+    tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "create_promise")
+    params = tool["function"]["parameters"]["properties"]
+    assert params["url"]["default"].endswith("/kart/{kart_no}/odeme-sozu")
+    body = params["body"]
+    assert body["properties"]["kart_no"]["default"] == "{{kart_no}}" and "Kartın son dört hanesi" in body["properties"]["kart_no"]["description"]
+    assert "kart_no" in body["required"] and "kanal" not in body["required"]
+    config = {"url": params["url"]["default"], "method": "POST", "headers": {},
+              "body": {"customer_id": "c1", "kart_no": "1234", "kanal": "tel", "product_id": "p1", "amount": 10, "date": "2026-10-20"}}
+    exec(tool["pre_process_code"], {"config": config, "vars": {}})
+    assert config["url"].endswith("/kart/1234/odeme-sozu?kanal=tel")
+    assert config["body"] == {"customer_id": "c1", "product_id": "p1", "amount": 10, "date": "2026-10-20"}
+    assert "{" not in config["url"]
+    # With a call variable of its own name the path keeps the platform's {{name}}, as before.
+    spec["call_variables"] += ["musteriNo"]
+    url = compile_workflow(spec, api, BRIEFS)["nodes"]["load_account"]["pre_actions"][0]["function"]["parameters"]["properties"]["url"]["default"]
+    assert url.endswith("/musteri/{{musteriNo}}/ekstre?tur=kart")
+
+
+def test_an_engine_run_path_parameter_from_the_identity_check():
+    api = _rest_api()
+    verify = api["paths"]["/verify_identity"]["post"]
+    verify["responses"] = {"200": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+        "all_verified": {"type": "boolean"}, "musteriNo": {"type": "string"}}}}}}}
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    assert validate_workflow(wf, api) == []
+    load = wf["nodes"]["load_account"]["pre_actions"][0]
+    config = {"url": load["function"]["parameters"]["properties"]["url"]["default"], "headers": {}, "body": {}}
+    exec(load["pre_process_code"], {"config": config, "vars": {"verify_identity_response.data.musteriNo": "77"}})
+    assert config["url"].endswith("/musteri/77/ekstre?tur=kart")
+
+
+def test_identity_checked_in_one_request():
+    api = json.loads(json.dumps(API))
+    api["paths"]["/verify_identity"]["post"]["requestBody"]["content"]["application/json"]["schema"] = {
+        "type": "object", "properties": {"customer_id": {"type": "string"}, "date_of_birth": {"type": "string"}, "phone_last4": {"type": "string"}},
+        "required": ["customer_id", "date_of_birth", "phone_last4"]}
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    assert validate_workflow(wf, api) == []
+    task = wf["nodes"]["identify"]["task_message"]
+    assert "then call verify_identity once with all the answers" in task and "once for each answer" not in task
+    assert "all_verified" in json.dumps(wf["nodes"]["identify"]["transitions"][0]["condition"])
+    tool = next(t for t in wf["nodes"]["identify"]["tools"] if t["function"]["name"] == "verify_identity")
+    body = tool["function"]["parameters"]["properties"]["body"]["properties"]
+    assert body["date_of_birth"]["default"] == "{{date_of_birth}}" and body["customer_id"]["default"] == "{{customer_id}}"
+    # The service's answer is the whole check: short of all_verified it failed, and a failed request is sent again as it was.
+    for data, note in (({"ok": True, "all_verified": True}, "Identity is fully verified."), ({"ok": True, "all_verified": False}, "Identity is NOT verified"),
+                       ({"ok": True, "verified": True}, "Identity is NOT verified")):
+        result = {"status": "success", "status_code": 200, "data": dict(data)}
+        exec(tool["post_process_code"], {"result": result})
+        assert result["data"]["what_to_do_next"].startswith(note), data
+    result = {"status": "error", "status_code": 503, "data": {}}
+    exec(tool["post_process_code"], {"result": result})
+    assert "once more with the same answers" in result["data"]["what_to_do_next"]
+    # The practice's one answer per call keeps its sentence.
+    assert "once for each answer" in compile_workflow(SPEC, API, BRIEFS)["nodes"]["identify"]["task_message"]
+
+
+def test_operations_no_role_maps_are_tools_of_the_negotiation():
+    api = json.loads(json.dumps(API))
+    api["paths"]["/send_sms"] = {"post": {"summary": "Send the customer a payment link by SMS.", "requestBody": {"content": {
+        "application/json": {"schema": {"type": "object", "properties": {"customer_id": {"type": "string"}, "text": {"type": "string"}}}}}}}}
+    api["paths"]["/notes/close_call"] = {"post": {"operationId": "close_call_legacy"}}
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    assert validate_workflow(wf, api) == []
+    tools = {t["function"]["name"]: t for t in wf["nodes"]["negotiate"]["tools"]}
+    assert tools["send_sms"]["function"]["description"] == "Send the customer a payment link by SMS."
+    assert "close_call_legacy" in tools and "send_sms" in _tool_names({"nodes": {"w": wf["nodes"]["wrap_up"]}})
+    assert "send_sms" not in {t["function"]["name"] for t in wf["nodes"]["identify"]["tools"]}
+    assert tools["close_call"]["function"]["parameters"]["properties"]["url"]["default"].endswith("/close_call")
+    assert [t["function"]["name"] for t in compile_workflow(SPEC, API, BRIEFS)["nodes"]["negotiate"]["tools"]] == [
+        "create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call"]
+
+
+def test_the_examples_are_said_in_the_agents_language():
+    english = compile_workflow(SPEC, API, BRIEFS)["system_prompt"]
+    assert "Language: English.\n\n" in english and "Say everything in" not in english
+    spec = json.loads(json.dumps(SPEC))
+    spec["language"] = "Turkish"
+    turkish = compile_workflow(spec, API, BRIEFS)["system_prompt"]
+    assert "Language: Turkish. Say everything in Turkish." in turkish and "say them in Turkish" in turkish
+
+
+def test_the_close_reason_field_comes_from_the_close_request():
+    api = json.loads(json.dumps(API))
+    api["paths"]["/close_call"]["post"]["requestBody"]["content"]["application/json"]["schema"] = {
+        "type": "object", "properties": {"customer_id": {"type": "string"}, "sonuc": {"type": "string", "enum": ["SOZ", "RET"]},
+                                         "aciklama": {"type": "string"}}, "required": ["customer_id", "sonuc"]}
+    spec = json.loads(json.dumps(SPEC))
+    spec["outcomes"] = {"no_reason": ["SOZ"]}
+    wf = compile_workflow(spec, api, BRIEFS)
+    tool = next(t for t in wf["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "close_call")
+    for outcome, reason, kept in (("SOZ", "x", False), ("RET", "istemiyor", True), ("RET", "{{aciklama}}", False)):
+        config = {"body": {"sonuc": outcome, "aciklama": reason}}
+        exec(tool["pre_process_code"], {"config": config})
+        assert ("aciklama" in config["body"]) == kept
+    # A close request with no free-text field beside the outcome has nothing to drop.
+    del api["paths"]["/close_call"]["post"]["requestBody"]["content"]["application/json"]["schema"]["properties"]["aciklama"]
+    tool = next(t for t in compile_workflow(spec, api, BRIEFS)["nodes"]["negotiate"]["tools"] if t["function"]["name"] == "close_call")
+    assert "pop(" not in tool["pre_process_code"]
+
+
+def test_a_body_field_named_like_a_call_variable_is_baked_from_it():
+    # A prose contract's musteriNo and the spec reader's musteri_no: the customer number comes from the call, never the model.
+    api = json.loads(json.dumps(API))
+    for path in ("/verify_identity", "/get_account", "/add_note", "/close_call"):
+        schema = api["paths"][path]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        schema["properties"] = {("musteriNo" if k == "customer_id" else k): v for k, v in schema["properties"].items()}
+        schema["required"] = ["musteriNo" if k == "customer_id" else k for k in schema.get("required", [])]
+    close = api["paths"]["/close_call"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    close["properties"]["aciklama"] = close["properties"].pop("reason")
+    verify = api["paths"]["/verify_identity"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    spec = json.loads(json.dumps(SPEC))
+    spec["call_variables"] = [v for v in spec["call_variables"] if v != "customer_id"] + ["musteri_no"]
+    wf = compile_workflow(spec, api, BRIEFS)
+    assert validate_workflow(wf, api) == []
+    tools = {t["function"]["name"]: t for node in ("identify", "negotiate") for t in wf["nodes"][node]["tools"]}
+    for name in ("verify_identity", "add_note", "close_call"):
+        body = tools[name]["function"]["parameters"]["properties"]["body"]
+        assert body["properties"]["musteriNo"] == {"type": "string", "default": "{{musteri_no}}"} and "musteriNo" not in body["required"], name
+    load = wf["nodes"]["load_account"]["pre_actions"][0]["function"]["parameters"]["properties"]["body"]["properties"]
+    assert load["musteriNo"]["default"] == "{{musteri_no}}"
+    # The close request's free-text field is still the reason beside the outcome: the baked number is not free text.
+    assert "'aciklama'" in tools["close_call"]["pre_process_code"]
+    # In the identity check a security answer named like a call variable stays the caller's answer.
+    verify["properties"] = {"musteriNo": {"type": "string"}, "dogumTarihi": {"type": "string"}, "telefonSon4": {"type": "string"}}
+    verify["required"] = ["musteriNo", "dogumTarihi", "telefonSon4"]
+    spec["call_variables"] += ["dogum_tarihi"]
+    spec["identity"]["questions"][0]["field"], spec["identity"]["questions"][1]["field"] = "dogum_tarihi", "telefon_son4"
+    wf = compile_workflow(spec, api, BRIEFS)
+    tool = next(t for t in wf["nodes"]["identify"]["tools"] if t["function"]["name"] == "verify_identity")
+    body = tool["function"]["parameters"]["properties"]["body"]
+    assert body["properties"]["musteriNo"]["default"] == "{{musteri_no}}" and body["properties"]["dogumTarihi"]["default"] == "{{dogumTarihi}}"
+    assert body["required"] == ["dogumTarihi", "telefonSon4"]
+    # One field per question, named but for case and separators: all the answers in one request, each under its field.
+    task = wf["nodes"]["identify"]["task_message"]
+    assert "then call verify_identity once with all the answers" in task
+    assert "- dogumTarihi: Could you tell me your date of birth?" in task and "- telefonSon4: And the last four" in task
+
+
+def test_the_identity_request_shape_decides_one_answer_per_call():
+    from builder.compile import _per_answer
+    spec = json.loads(json.dumps(SPEC))
+    one_by_one = {"customer_id": {"type": "string"}, "field": {"type": "string", "enum": ["DATE_OF_BIRTH", "PHONE_LAST4"]}, "answer": {"type": "string"}}
+    assert _per_answer(spec, one_by_one)
+    # A question field and an answer with no enum: still one answer per call, not all the answers in fields the body lacks.
+    assert _per_answer(spec, {"customer_id": {}, "field": {"type": "string"}, "answer": {}})
+    # One field per question: all at once, also beside another enum such as a channel.
+    assert not _per_answer(spec, {"customer_id": {}, "dateOfBirth": {}, "phone_last4": {}, "channel": {"type": "string", "enum": ["IVR", "WEB"]}})
+    # The answers inside an object field, or as a list: all at once.
+    assert not _per_answer(spec, {"customer_id": {}, "answers": {"type": "object", "properties": {"date_of_birth": {}, "phone_last4": {}}}})
+    assert not _per_answer(spec, {"customer_id": {}, "answers": {"type": "array", "items": {"type": "object"}}})
+
+
+def test_null_keys_in_a_model_written_api_do_not_break_the_compile():
+    api = json.loads(json.dumps(API))
+    api["paths"]["/get_account"]["post"]["requestBody"] = None
+    api["paths"]["/add_note"]["post"]["requestBody"]["content"]["application/json"]["schema"]["properties"] = None
+    api["paths"]["/close_call"]["post"]["requestBody"]["content"]["application/json"]["schema"]["required"] = None
+    api["paths"]["/verify_identity"]["post"]["responses"]["200"]["content"] = None
+    wf = compile_workflow(SPEC, api, BRIEFS)
+    tools = {t["function"]["name"]: t for t in wf["nodes"]["negotiate"]["tools"]}
+    assert tools["add_note"]["function"]["parameters"]["properties"]["body"]["properties"] == {}
+    assert tools["close_call"]["function"]["parameters"]["properties"]["body"]["required"] == []
+
+
+def test_without_an_identity_tool_the_model_checks_against_the_calls_record():
+    api = json.loads(json.dumps(API))
+    api["paths"].pop("/verify_identity")
+    spec = json.loads(json.dumps(SPEC))
+    spec["call_variables"] = spec["call_variables"] + ["dateOfBirth"]
+    task = compile_workflow(spec, api, BRIEFS)["nodes"]["identify"]["task_message"]
+    assert "THE BANK'S RECORD of the answers" in task and "- date_of_birth: {{dateOfBirth}}" in task and "phone_last4:" in task
+    assert "- phone_last4: {{" not in task
+    # Without such a variable there is no record to show.
+    assert "THE BANK'S RECORD" not in compile_workflow(SPEC, api, BRIEFS)["nodes"]["identify"]["task_message"]

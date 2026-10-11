@@ -7,6 +7,55 @@ import copy
 import re
 
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+# Turkish is matched on folded text: lowercase, the dotted and dotless i as 'i', Turkish letters as ASCII.
+FOLD = str.maketrans("\u00e7\u011f\u0131\u00f6\u015f\u00fc\u00e2\u00ee\u00fb", "cgiosuaiu", "\u0307")
+TR_DAYS = dict(zip("pazartesi sali carsamba persembe cuma cumartesi pazar".split(), WEEKDAYS))
+TR_DAY_ABBR = dict(zip("pzt sal car per cum cmt paz".split(), WEEKDAYS))
+# The endings a Turkish day name takes: plural, then a case ('cumartesileri', 'pazartesiden', 'cumaya').
+TR_DAY_END = re.compile(r"(?:l[ae]ri?)?(?:n?[dt][ae]n?|y?[ae]|n?in|si|ki)?")
+TR_NUMBERS = {"bir": "1", "iki": "2", "uc": "3", "dort": "4", "bes": "5"}
+LANGUAGES = {"Turkish": r"turk(?:ish|ce)?(?: dili)?|tr(?:[-_ ]tr)?", "English": r"english|ingilizce|en(?:[-_ ][a-z]{2})?"}
+
+
+def fold(text):
+    """Text as Turkish words are matched: 'İADE', 'iade' and 'ıade' all give 'iade'; English is only lowercased."""
+    return str(text or "").lower().translate(FOLD)
+
+
+def language_name(value):
+    """The language the agent speaks as one name ('tr-TR', 'Türkçe' and 'Turkish' are Turkish); '' when value names none."""
+    text = re.sub(r"\s+", " ", _text(value)).strip(" .;:")
+    # A known language before a qualifier counts as named: 'Türkçe (resmi dil)', 'Turkish, English on request'.
+    head = re.split(r"\s*[(,;/]|\s+-\s+", fold(text))[0].strip()
+    for name, pattern in LANGUAGES.items():
+        if re.fullmatch(pattern, fold(text)) or re.fullmatch(pattern, head):
+            return name
+    if not text or len(text.split()) > 4 or re.search(r"[\d<>{}\[\]_]|\b(?:language|speaks?|agent|customer|caller|same|unknown|none|dil|dili)\b", fold(text)):
+        return ""
+    return text
+
+
+def success_schema(op):
+    """The JSON schema of an operation's success response: 200, else the first 2xx; JSON, else the first content type."""
+    responses = op.get("responses") or {}
+    key = "200" if "200" in responses else next((k for k in responses if str(k).startswith("2")), None)
+    content = (responses.get(key) or {}).get("content") or {}
+    media = content.get("application/json") or next((v for v in content.values() if isinstance(v, dict) and v.get("schema")), {})
+    return media.get("schema") or {}
+
+
+def product_schema(op, list_field):
+    """The schema of one product in an operation's success response: the items of the array list_field names (a dotted path)
+    or the object it names; with no list_field the response itself (one product as an object, or a top-level array).
+    None when list_field names nothing in the response."""
+    node = success_schema(op)
+    for part in str(list_field).split(".") if list_field else []:
+        props = node.get("properties") if isinstance(node, dict) else None
+        node = props.get(part) if isinstance(props, dict) else None
+        if not node or not isinstance(node, dict):
+            return None
+    items = node.get("items")
+    return items if isinstance(items, dict) and items.get("properties") else node
 
 
 def resolve_refs(api):
@@ -84,14 +133,36 @@ def _names(value, key="name"):
     return []
 
 
+def _tr_days(text):
+    """The weekdays a folded Turkish text names, in order ('pazartesiden cumaya' Monday, Friday), and whether the first is a
+    'from' ('-den')."""
+    words = re.findall(r"[a-z]+", re.sub(r"['\u2019]", "", text))
+    # Abbreviations ('Pzt-Cum') only in a text of day words alone: 'per week' is no Thursday.
+    abbr = TR_DAY_ABBR if all(w in TR_DAYS or w in TR_DAY_ABBR or w in ("ve", "ila", "kadar", "arasi") for w in words) else {}
+    found, start = [], False
+    for word in words:
+        stem = max((d for d in TR_DAYS if word.startswith(d)), key=len, default=None)
+        if stem and TR_DAY_END.fullmatch(word[len(stem):]):
+            start = start or (not found and bool(re.fullmatch(r"n?[dt][ae]n", word[len(stem):])))
+            found.append(TR_DAYS[stem])
+        elif word in abbr:
+            found.append(abbr[word])
+    return found, start
+
+
 def weekdays(value):
-    """Map 'mon', 'Monday', 'Monday to Friday' or ['Mon', ...] to canonical weekday names."""
+    """Map 'mon', 'Monday', 'Monday to Friday', 'Pazartesi-Cuma' or ['Mon', ...] to canonical weekday names."""
     items = value if isinstance(value, list) else [value]
     out = []
     for item in items:
         text = str(item or "").strip().lower()
         found = [d for d in WEEKDAYS if re.search(r"\b" + d[:3].lower() + r"[a-z]*\b", text)]
-        if len(found) == 2 and re.search(r"\b(to|through|until|till|-|–)\b|[-–]", text):
+        ranged = re.search(r"\b(to|through|until|till|-|–)\b|[-–]", text)
+        if not found:
+            found, start = _tr_days(fold(text))
+            ranged = ranged or start or re.search(r"\b(?:ila|kadar|arasi\w*)\b", fold(text))
+            found += WEEKDAYS[:5] if re.search(r"\bhafta ?ici", fold(text)) else []
+        if len(found) == 2 and ranged:
             a, b = WEEKDAYS.index(found[0]), WEEKDAYS.index(found[1])
             found = WEEKDAYS[a:b + 1] if a <= b else WEEKDAYS[a:] + WEEKDAYS[:b + 1]
         out += [d for d in found if d not in out]
@@ -111,12 +182,7 @@ def _product_types(api, list_field, type_field):
     try:
         from .compile import operation
         _, op = operation(api, "get_account")
-        props = op.get("responses", {}).get("200", {}).get("content", {}).get("application/json", {}).get("schema", {}).get("properties", {})
-        items = {}
-        for part in str(list_field or "").split("."):
-            items = props.get(part, {})
-            props = items.get("properties", {})
-        node, props = {}, items.get("items", {}).get("properties", {})
+        node, props = {}, (product_schema(op, list_field) or {}).get("properties") or {}
         for part in str(type_field or "").split("."):
             node = props.get(part, {}) if isinstance(props, dict) else {}
             props = node.get("properties", {})
@@ -125,16 +191,17 @@ def _product_types(api, list_field, type_field):
         return []
 
 
-PLACEHOLDER = re.compile(r"(?<!\{)\{\s*([A-Za-z][\w ]*?)\s*\}(?!\})|<\s*([A-Za-z][\w ]*?)\s*>|\[\s*([A-Za-z][\w ]*?)\s*\]")
+# A name in brackets; it may start with any letter ('{İsim}', '<Müşteri Adı>').
+PLACEHOLDER = re.compile(r"(?<!\{)\{\s*([^\W\d_][\w ]*?)\s*\}(?!\})|<\s*([^\W\d_][\w ]*?)\s*>|\[\s*([^\W\d_][\w ]*?)\s*\]")
 
 
 def _call_templates(text, call_vars):
     """{first_name}, <First Name> or [first_name] for a call variable becomes the platform's {{first_name}}; anything else
     is left as it is."""
-    by_key = {str(v).lower(): v for v in call_vars}
+    by_key = {fold(v): v for v in call_vars}
 
     def one(m):
-        name = by_key.get(re.sub(r"\s+", "_", (m.group(1) or m.group(2) or m.group(3)).strip()).lower())
+        name = by_key.get(fold(re.sub(r"\s+", "_", (m.group(1) or m.group(2) or m.group(3)).strip())))
         return "{{" + name + "}}" if name else m.group(0)
     return PLACEHOLDER.sub(one, text)
 
@@ -147,15 +214,54 @@ NOT_WHO = re.compile(r"agent|bot|assistant|bank|product|campaign|company|operato
 CALL_DATA = re.compile(r"amount|balance|due|owed|arrear|overdue|debt|past|late|limit|minimum|instal|account|loan|card|payment|band|"
                        r"segment|risk|score|birth|dob|phone|mobile|postcode|post_code|zip|iban|ssn|pin|password|secret|answer|"
                        r"address|email|date|time|today|day|ref|number|^id$|_id$", re.I)
+# The same in Turkish, on the folded name ('müşteriAdı' is 'musteri_adi'): a short word only as a whole word ('ad' is no 'adres').
+TR_WHO = re.compile(r"(?<![a-z])(?:adi?|isim|ismi)(?![a-z])|soyad|sahibi|unvan|hitap|cinsiyet")
+TR_NOT_WHO = re.compile(r"asistan|temsilci|urun|kampanya|sirket|marka|sube|kurum")
+TR_CALL_DATA = re.compile(r"dogum|tarih|kart|borc|tutar|asgari|odeme|hesap|kimlik|tckn|telefon|adres|sifre|parola|cevap|yanit|vade|"
+                          r"ekstre|bakiye|taksit|gecik|numara|posta|bugun|simdi|saat|zaman|gun|(?<![a-z])(?:tc|tel|gsm|cep|no|son|hane|kod)(?![a-z])")
+# The holder of a card or account, with the thing held ('account_holder', 'kart_sahibi'), on the folded name.
+HOLDER = re.compile(r"(?:(?:card|account|kart|hesap)_?)?(?:holder|sahibi)")
 # Placeholders the policy uses for the facts it reads back; a call variable of that name is not filled into the policy.
 FACT_TOKENS = {"amount", "floor", "deadline", "date", "day", "weekday", "product", "time", "next_business_day"}
+
+
+def _is_who(name):
+    folded = fold(re.sub("(?<=[a-z0-9\u00e7\u011f\u0131\u00f6\u015f\u00fc])(?=[A-Z\u00c7\u011e\u0130\u00d6\u015e\u00dc])", "_", name))
+    if NOT_WHO.search(name) or TR_NOT_WHO.search(folded):
+        return False
+    held = HOLDER.sub("_", folded)
+    if held != folded:
+        # Whose a value is: 'kart_sahibi' is who, 'kart_sahibi_dogum_tarihi' the holder's date of birth.
+        return bool(WHO.search(held) or TR_WHO.search(held) or not (CALL_DATA.search(held) or TR_CALL_DATA.search(held)))
+    return bool(WHO.search(name) or TR_WHO.search(folded) or not (CALL_DATA.search(name) or TR_CALL_DATA.search(folded)))
 
 
 def who_variables(spec):
     """The call variables that say who this call is for."""
     now = spec.get("now_variable")
-    return [v for v in spec.get("call_variables") or [] if v != now and not NOT_WHO.search(v)
-            and (WHO.search(v) or not CALL_DATA.search(v))]
+    return [v for v in spec.get("call_variables") or [] if v != now and _is_who(v)]
+
+
+def _tool_name(key, api):
+    """A tool_descriptions key as the name the compiler gives the tool: a path or 'METHOD /path' of an operation becomes that
+    operation's tool name (its role, else compile.extra_tools' name), and so does the contract's own name for it
+    (x-contract-operation-id) or the tool name in another case ('smsGonder'); anything else its last path segment."""
+    from .compile import HTTP_METHODS, TOOL_NAMES, _find, _tool_base, extra_tools
+    paths = (api.get("paths") if isinstance(api, dict) else None) or {}
+    if not paths:
+        return str(key).strip().strip("/").split("/")[-1]
+    tools = {at: name for name, at in extra_tools(api).items()}
+    tools.update({_find(api, t): t for t in TOOL_NAMES if _find(api, t)[0]})
+    m = re.fullmatch(r"\s*(?:([A-Za-z]+)\s+)?(/\S*)\s*", str(key))
+    if m and isinstance(paths.get(m.group(2)), dict):
+        for method in [m.group(1).lower()] if m.group(1) else HTTP_METHODS:
+            if (m.group(2), method) in tools:
+                return tools[(m.group(2), method)]
+    for (path, method), name in tools.items():
+        if str(key).strip() in (paths[path][method].get("x-contract-operation-id"), paths[path][method].get("operationId")):
+            return name
+    base = _tool_base(key)
+    return base if base in tools.values() else str(key).strip().strip("/").split("/")[-1]
 
 
 def normalize_spec(spec, api):
@@ -165,6 +271,8 @@ def normalize_spec(spec, api):
     for key in ("language", "now_variable", "opening_line"):
         if spec.get(key) is not None and not isinstance(spec[key], str):
             spec[key] = _text(spec[key])
+    if spec.get("language"):
+        spec["language"] = language_name(spec["language"]) or spec["language"]
     now = spec.get("now_variable")
     if isinstance(now, str) and now and now not in spec["call_variables"] and \
             not any(re.search(r"now|date|time|today|clock", v, re.I) for v in spec["call_variables"]):
@@ -183,17 +291,19 @@ def normalize_spec(spec, api):
         elif q not in (None, ""):
             questions.append({"field": str(q), "ask": "", "answer_format": ""})
     identity["questions"] = questions
-    limit = str(identity.get("max_wrong_answers") or "").strip().lower()
+    limit = fold(identity.get("max_wrong_answers") or "").strip()
     limit = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5"}.get(limit.split(" ")[0], limit)
+    if not re.search(r"\d", limit):
+        limit = re.sub(r"\b(bir|iki|uc|dort|bes)\b", lambda m: TR_NUMBERS[m.group(1)], limit)
     limit = re.search(r"\d+", limit)
     identity["max_wrong_answers"] = int(limit.group(0)) if limit and int(limit.group(0)) > 0 else None
     spec["identity"] = identity
     calendar = spec.get("calendar") if isinstance(spec.get("calendar"), dict) else {}
     days = weekdays(calendar.get("business_weekdays"))
     calendar["business_weekdays"] = days or WEEKDAYS[:5]
-    convention = str(calendar.get("next_weekday") or "").strip().lower()
-    calendar["next_weekday"] = ("following_week" if re.search(r"follow|calendar|week after|next week", convention) else
-                                "coming" if re.search(r"coming|occurr|soonest|first", convention) else "")
+    convention = fold(calendar.get("next_weekday") or "").strip()
+    calendar["next_weekday"] = ("following_week" if re.search(r"follow|calendar|week after|next week|haftaya|(?:gelecek|sonraki|takvim) hafta", convention) else
+                                "coming" if re.search(r"coming|occurr|soonest|first|en yakin|\bilk\b|\bgelen\b", convention) else "")
     holidays = []
     for h in calendar.get("holidays") or []:
         if isinstance(h, dict):
@@ -202,12 +312,13 @@ def normalize_spec(spec, api):
             m = re.search(r"\d{4}-\d{2}-\d{2}", h)
             holidays.append({"date": m.group(0) if m else h, "name": h.replace(m.group(0), "").strip(" :-–()") or "bank holiday" if m else "bank holiday"})
     calendar["holidays"] = holidays
-    rule = str(calendar.get("closed_day_rule") or "").lower()
-    calendar["closed_day_rule"] = ("previous_business_day" if re.search(r"previous|prior|before|earlier", rule) else
-                                   "next_business_day" if re.search(r"next|following|after|later", rule) else
-                                   "ask_again" if re.search(r"ask|another|other|again", rule) else "none")
-    earliest = str(calendar.get("earliest_promise_day") or "").lower()
-    calendar["earliest_promise_day"] = "tomorrow" if re.search(r"tomorrow|next day|after today|not today|later than today", earliest) else "today"
+    rule = fold(calendar.get("closed_day_rule") or "")
+    calendar["closed_day_rule"] = ("previous_business_day" if re.search(r"previous|prior|before|earlier|onceki|one cek", rule) else
+                                   "next_business_day" if re.search(r"next|following|after|later|sonraki|ertesi|takip eden|izleyen", rule) else
+                                   "ask_again" if re.search(r"ask|another|other|again|baska|tekrar|yeniden|\bsor(?:ar|ulur|mali)\b", rule) else "none")
+    earliest = fold(calendar.get("earliest_promise_day") or "")
+    calendar["earliest_promise_day"] = ("tomorrow" if re.search(r"tomorrow|next day|after today|not today|later than today|yarin|ertesi gun|"
+                                                                r"bugunden sonra|bugun (?:degil|olamaz|verilemez)", earliest) else "today")
     spec["calendar"] = calendar
     account = spec.get("account") if isinstance(spec.get("account"), dict) else {}
     types = _product_types(api, account.get("list_field"), account.get("type_field"))
@@ -246,6 +357,10 @@ def normalize_spec(spec, api):
                 band["deadline"]["type"] = ("last_business_day_of" if business else "end_of") + ("_next_month" if nxt else "_month")
             elif "week" in words:
                 band["deadline"]["type"] = "last_business_day_" + ("next_week" if nxt else "this_week")
+        # The product's own date (a statement's due date), however the reader spelled the type.
+        if band["deadline"].get("field") and (re.search(r"field|due|product|statement", kind)
+                                              or (kind == "fixed_date" and not band["deadline"].get("date"))):
+            band["deadline"]["type"] = "product_field"
         roll = str(band["deadline"].get("roll_forward") or "").lower()
         band["deadline"]["roll_forward"] = ("today_or_earlier" if re.search(r"today|earlier|passed|past", roll)
                                             else "before_first_promise_day" if re.search(r"first|before|earliest|promise", roll) else "")
@@ -265,7 +380,7 @@ def normalize_spec(spec, api):
         value = value if isinstance(value, dict) else {}
         fixed = {}
         for key, item in value.items():
-            name = str(key).strip().strip("/").split("/")[-1]
+            name = _tool_name(key, api)
             if section == "tool_descriptions":
                 fixed[name] = _text(item)
             else:

@@ -446,3 +446,197 @@ def test_a_failed_service_call_is_no_wrong_answer_and_a_failed_account_load_is_s
     variables = {"now": "2026-10-21T09:00"}
     exec(compile(code, "facts", "exec"), {"vars": variables})
     assert variables["facts_state"] == "no_products"
+
+
+def _without(api, *tools):
+    api = json.loads(json.dumps(API))
+    api["paths"] = {p: v for p, v in api["paths"].items() if p.strip("/") not in tools}
+    return api
+
+
+def test_each_operation_is_checked_on_its_own_and_optional_product_fields_may_be_empty():
+    # A contract without close_call or add_note: the account is still checked, and nothing is said about the missing ones.
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"]["list_field"] = "nonsense"
+    issues = validate_spec(spec, _without(API, "close_call", "add_note"))
+    assert issues == ["account.list_field nonsense is not in get_account response"]
+    assert validate_spec(SPEC, _without(API, "close_call", "verify_identity", "get_account")) == []
+    # A bad verify_identity schema costs only its own checks.
+    api = json.loads(json.dumps(API))
+    api["paths"]["/verify_identity"]["post"]["requestBody"] = "see the contract"
+    issues = validate_spec(spec, api)
+    assert any(i.startswith("spec could not be checked against verify_identity") for i in issues) and any("list_field" in i for i in issues)
+    # One product type and no bands: no type or segment field to name.
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"].update(type_field="", segment_field="", bands=[], floor_field_by_type={"card": "minimum_payment"},
+                           spoken_name_by_type={"card": "your card"})
+    assert validate_spec(spec, API) == []
+    spec["account"]["segment_field"] = "invented_field"
+    assert validate_spec(spec, API) == []
+    # Several bands need the field that selects one.
+    spec["account"].update(segment_field="", bands=[dict(SPEC["account"]["bands"][0]), dict(SPEC["account"]["bands"][0], min=11, max=90)])
+    assert any("segment_field is empty" in i for i in validate_spec(spec, API))
+    # A success response written as 201 is still the account's schema.
+    api = json.loads(json.dumps(API))
+    responses = api["paths"]["/get_account"]["post"]["responses"]
+    responses["201"] = responses.pop("200")
+    assert validate_spec(SPEC, api) == []
+
+
+def test_identity_answers_in_one_call_are_checked_against_the_request_fields():
+    api = json.loads(json.dumps(API))
+    body = api["paths"]["/verify_identity"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    body["properties"] = {"customer_id": {"type": "string"}, "date_of_birth": {"type": "string"}, "phone_last4": {"type": "string"}}
+    assert not [i for i in validate_spec(SPEC, api) if "identity field" in i]
+    # The only enum property is the field list, whatever its name.
+    body["properties"] = {"customer_id": {"type": "string"}, "soru": {"type": "string", "enum": ["dogum_tarihi"]}, "cevap": {"type": "string"}}
+    assert any("identity field date_of_birth" in i for i in validate_spec(SPEC, api))
+    # One call for all answers, with an unrelated enum property: the fields are the request's.
+    body["properties"] = {"kanal": {"type": "string", "enum": ["ivr"]}, "dogumTarihi": {"type": "string"}, "PHONE_LAST4": {"type": "string"}}
+    spec = json.loads(json.dumps(SPEC))
+    spec["identity"]["questions"] = [dict(spec["identity"]["questions"][0], field="dogum_tarihi"), dict(spec["identity"]["questions"][1], field="phone_last4")]
+    assert not [i for i in validate_spec(spec, api) if "identity field" in i]
+    # A field that is neither the enum's nor the request's is checked in the mode the other fields point to.
+    spec["identity"]["questions"][1]["field"] = "tc_son4"
+    for _ in range(2):
+        assert [i.split(" request")[0] for i in validate_spec(spec, api) if "identity field" in i] == ["identity field tc_son4 is not a verify_identity"]
+        body["properties"].pop("kanal", None)
+    body["properties"] = {"customer_id": {"type": "string"}, "field": {"type": "string", "enum": ["date_of_birth", "phone_last4"]}, "value": {"type": "string"}}
+    spec["identity"]["questions"][0]["field"], spec["identity"]["questions"][1]["field"] = "date_of_birth", "value"
+    assert any("identity field value is not in verify_identity enum" in i for i in validate_spec(spec, api))
+
+
+def test_the_language_is_named_once_and_a_missing_one_is_reported():
+    from builder.spec import language_name
+    for raw in ("Türkçe", "TÜRKÇE", "turkish", "tr", "tr-TR", "TR_tr", "Türk dili"):
+        assert normalize_spec(dict(SPEC, language=raw), API)["language"] == "Turkish", raw
+    for raw in ("English", "en", "en-GB", "İngilizce"):
+        assert normalize_spec(dict(SPEC, language=raw), API)["language"] == "English", raw
+    assert language_name("Spanish") == "Spanish" and language_name("Spanish (formal)") == "Spanish (formal)"
+    for raw in ("Turkish (formal)", "Türkçe (resmi dil)", "Turkish, English on request", "tr-TR / en", "Türkçe - siz hitabıyla"):
+        assert language_name(raw) == "Turkish", raw
+    assert validate_spec(dict(SPEC, language="Türkçe"), API) == [] and validate_spec(dict(SPEC, language="Spanish"), API) == []
+    for raw in (None, "", "<language the agent speaks>", "the customer's language", "same as the customer"):
+        assert [i for i in validate_spec(dict(SPEC, language=raw), API) if i.startswith("spec.language")], raw
+
+
+def test_turkish_call_variables_show_only_who_the_call_is_for():
+    from builder.spec import who_variables
+    who = ["musteri_adi", "müşteriSoyadı", "ad_soyad", "AD_SOYAD", "kart_sahibi", "unvan", "hitap", "cinsiyet", "ISIM", "musteri"]
+    data = ["dogum_tarihi", "DOĞUM_TARİHİ", "kart_son4", "son_dort_hane", "borc_tutari", "asgari_odeme", "tc_kimlik_no", "tckn",
+            "telefon", "cep_tel", "adres", "musteri_no", "hesap_numarasi", "ekstre_borcu", "son_odeme_tarihi", "gecikme_gunu", "bakiye"]
+    others = ["temsilci_adi", "banka_adi", "urun_adi", "asistan_adi"]
+    spec = {"call_variables": who + data + others + ["simdi"], "now_variable": "simdi"}
+    assert who_variables(spec) == who
+    # The English names keep their side.
+    english = {"call_variables": ["customer_id", "first_name", "last_name", "title", "now", "client_ref", "given_name", "card_holder",
+                                  "address", "amount_due", "agent_name", "customer"], "now_variable": "now"}
+    assert who_variables(english) == ["first_name", "last_name", "title", "given_name", "card_holder", "customer"]
+    # A holder's own data is no name: it stays out of reach until the identity is verified.
+    held = {"call_variables": ["kart_sahibi_adi", "cardHolderName", "kart_sahibi_dogum_tarihi", "hesap_sahibi_tckn", "account_holder_dob"],
+            "now_variable": "now"}
+    assert who_variables(held) == ["kart_sahibi_adi", "cardHolderName"]
+
+
+def test_turkish_calendar_and_limit_words_are_normalised():
+    assert weekdays("Pazartesi-Cuma") == WEEKDAYS_5
+    assert weekdays("Pazartesi'den Cuma'ya kadar") == WEEKDAYS_5 == weekdays("pazartesiden cumaya")
+    assert weekdays("Pazartesi ile Cuma arası") == WEEKDAYS_5
+    assert weekdays("Pazartesi ve Cuma") == ["Monday", "Friday"]
+    assert weekdays(["Salı", "ÇARŞAMBA", "Perşembe"]) == ["Tuesday", "Wednesday", "Thursday"]
+    assert weekdays("hafta içi ve cumartesi") == WEEKDAYS_5 + ["Saturday"]
+    assert weekdays("Cumartesi, Pazar") == ["Saturday", "Sunday"] and weekdays("pazarlama") == []
+    assert weekdays("Pzt-Cum") == WEEKDAYS_5 and weekdays(["Pzt", "Sal"]) == ["Monday", "Tuesday"]
+    # An English text with no day name keeps the default: 'per' is no Thursday here.
+    assert weekdays("five days per week") == [] and weekdays("weekdays") == []
+    cases = [("closed_day_rule", "bir sonraki iş günü", "next_business_day"), ("closed_day_rule", "Bir önceki iş gününe çek", "previous_business_day"),
+             ("closed_day_rule", "müşteriden başka bir gün iste", "ask_again"), ("earliest_promise_day", "yarın", "tomorrow"),
+             ("earliest_promise_day", "Bugün olamaz", "tomorrow"), ("earliest_promise_day", "bugün", "today"),
+             ("next_weekday", "haftaya", "following_week"), ("next_weekday", "en yakın gelen gün", "coming")]
+    for key, raw, want in cases:
+        spec = json.loads(json.dumps(SPEC))
+        spec["calendar"][key] = raw
+        assert normalize_spec(spec, API)["calendar"][key] == want, raw
+    for raw, want in (("iki yanlış cevap", 2), ("en fazla üç", 3), ("3", 3), ("three wrong answers", 3), ("Üç", 3), ("hiç", None)):
+        spec = json.loads(json.dumps(SPEC))
+        spec["identity"]["max_wrong_answers"] = raw
+        assert normalize_spec(spec, API)["identity"]["max_wrong_answers"] == want, raw
+
+
+WEEKDAYS_5 = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+
+
+def test_a_turkish_opening_given_word_for_word_is_kept_unchanged():
+    from builder.generate import opening_issues
+    quote = "İyi günler, Freya Bank'tan arıyorum. Bu görüşme kaydediliyor."
+    for text in (f"Açılış cümlesi aynen şöyledir: '{quote}'", f"AÇILIŞ: asistan kelimesi kelimesine şunu söyler:\n“{quote}”",
+                 f"Aramayı şu cümleyle açın: «{quote}»"):
+        briefs = [{"path": "analiz.docx", "text": text}]
+        assert len(opening_issues({"opening_line": "Merhaba, Freya Bank'tan arıyorum."}, briefs)) == 1, text
+        assert opening_issues({"opening_line": quote + " {{ad}} Bey ile mi görüşüyorum?"}, briefs) == [], text
+
+
+def test_tool_descriptions_keyed_by_path_take_the_tool_name():
+    api = json.loads(json.dumps(API))
+    api["paths"]["/v1/sms/{customer_id}"] = {"post": {"operationId": "send_sms", "responses": {}}}
+    api["paths"]["/v1/odeme-linki"] = {"post": {"responses": {}}}
+    spec = dict(SPEC, tool_descriptions={"POST /close_call": "close", "/v1/sms/{customer_id}": "sms", "POST /v1/odeme-linki": "link",
+                                         "add_note": "note"},
+                tool_field_hints={"post /v1/sms/{customer_id}": {"text": "short"}})
+    out = normalize_spec(spec, api)
+    assert out["tool_descriptions"] == {"close_call": "close", "send_sms": "sms", "odeme_linki": "link", "add_note": "note"}
+    assert out["tool_field_hints"] == {"send_sms": {"text": "short"}}
+    # The contract's own operation name (kept by case.apply_roles) and a tool name written in camelCase.
+    api["paths"]["/close_call"]["post"]["x-contract-operation-id"] = "gorusmeyiKapat"
+    spec = dict(SPEC, tool_descriptions={"gorusmeyiKapat": "close", "sendSms": "sms", "odemeLinki": "link", "unknownTool": "x"})
+    assert normalize_spec(spec, api)["tool_descriptions"] == {"close_call": "close", "send_sms": "sms", "odeme_linki": "link", "unknownTool": "x"}
+
+
+def test_turkish_placeholders_become_call_variables_or_are_reported():
+    spec = dict(SPEC, call_variables=["musteri_no", "müşteri_adı", "simdi"], now_variable="simdi",
+                opening_line="İyi günler {Müşteri Adı}, ben Freya Bank'ın dijital asistanıyım. {MUSTERI_ADI} ile mi görüşüyorum?")
+    out = normalize_spec(spec, API)
+    assert out["opening_line"] == "İyi günler {{müşteri_adı}}, ben Freya Bank'ın dijital asistanıyım. {{müşteri_adı}} ile mi görüşüyorum?"
+    spec["opening_line"] = "İyi günler [İsim Soyisim], ben Freya Bank'ın dijital asistanıyım."
+    assert any("[İsim Soyisim]" in i for i in validate_spec(spec, API))
+    # A quote with a filled-in part is not compared word for word.
+    from builder.generate import opening_issues
+    briefs = [{"path": "analiz.docx", "text": "Açılış cümlesi aynen şöyledir: 'İyi günler, (ad soyad) ile mi görüşüyorum?'"}]
+    assert opening_issues({"opening_line": "İyi günler, {{müşteri_adı}} ile mi görüşüyorum?"}, briefs) == []
+
+
+def _account_response(schema):
+    api = json.loads(json.dumps(API))
+    api["paths"]["/get_account"]["post"]["responses"]["200"]["content"]["application/json"]["schema"] = schema
+    return api
+
+
+def test_the_account_may_come_back_as_one_object_or_a_top_level_array():
+    array = API["paths"]["/get_account"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"]["products"]
+    flat, nested = array["items"], {"type": "object", "properties": {"ok": {"type": "boolean"}, "statement": array["items"]}}
+    for schema, field in ((flat, ""), (flat, None), (array, ""), (nested, "statement")):
+        api, spec = _account_response(schema), json.loads(json.dumps(SPEC))
+        spec["account"]["list_field"] = field
+        assert validate_spec(spec, api) == [], (schema, field)
+        assert normalize_spec(spec, api)["account"]["product_types"] == ["credit_card", "personal_loan", "car_loan"]
+        assert validate_workflow(compile_workflow(spec, api, BRIEFS), api) == []
+    # The one product's fields are still checked, and a wrapped response still needs its list_field.
+    spec = json.loads(json.dumps(SPEC))
+    spec["account"].update(list_field="", id_field="statement_no")
+    assert validate_spec(spec, _account_response(flat)) == ["account.id_field statement_no is not a product field"]
+    spec["account"]["id_field"] = "product_id"
+    assert "account.id_field product_id is not a product field" in validate_spec(spec, _account_response(nested))
+    spec["account"]["list_field"] = "missing"
+    assert validate_spec(spec, _account_response(nested))[0] == "account.list_field missing is not in get_account response"
+
+
+def test_text_that_names_a_tool_the_bank_lacks_is_reported():
+    api, spec = _without(API, "close_call", "add_note"), json.loads(json.dumps(SPEC))
+    spec["policy"]["after_verification"] = "1. Gerekirse add_note ile not düş.\n2. Sonra close_call'u çağır."
+    assert [i.split(",")[0] for i in validate_spec(spec, api)] == ["the spec names add_note", "the spec names close_call"]
+    # A description keyed by a missing tool never reaches the agent; a contract with every tool may name them all.
+    spec["policy"]["after_verification"] = "1. Ask for payment."
+    spec["tool_descriptions"] = {"close_call": "CALL it last.", "create_promise": "CALL it after a yes, then add_notes."}
+    assert validate_spec(spec, api) == []
+    spec["policy"]["closing"] = "close_call with outcome promise; add_note first"
+    assert validate_spec(spec, API) == []

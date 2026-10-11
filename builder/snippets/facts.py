@@ -9,6 +9,19 @@ WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", 
 TIMES = r"^(?:(\d+(?:\.\d+)?)\s*(?:\*|\u00d7|x(?=\s))\s*([A-Za-z_][\w.]*)|([A-Za-z_][\w.]*)\s*(?:\*|\u00d7|\sx)\s*(\d+(?:\.\d+)?))$"
 
 
+def _days(n):
+    return datetime.timedelta(days=n)
+
+
+def _json_var(name, kind):
+    """A call variable that holds JSON, as `kind` (dict or list); empty when it is missing, not JSON or another kind."""
+    try:
+        value = json.loads(str(vars.get(name) or "null"))
+    except Exception:
+        value = None
+    return value if isinstance(value, kind) else kind()
+
+
 def _spec():
     try:
         return json.loads(SPEC_JSON)
@@ -17,6 +30,93 @@ def _spec():
 
 
 MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+# Turkish is read alongside English, on folded text: lowercase ('I' and the dotless one give 'i', and so does the dotted
+# capital), Turkish letters as ASCII. Nothing English changes.
+FOLD = str.maketrans("\u00e7\u011f\u0131\u00f6\u015f\u00fc", "cgiosu", "\u0307")
+TR_DAYS = "pazartesi sali carsamba persembe cuma cumartesi pazar".split()
+TR_MONTHS = "ocak subat mart nisan mayis haziran temmuz agustos eylul ekim kasim aralik".split()
+TR_NUM = dict(zip("sifir bir iki uc dort bes alti yedi sekiz dokuz on yirmi otuz kirk elli altmis yetmis seksen doksan yuz bin milyon dord".split(),
+                  list(range(10)) + list(range(10, 100, 10)) + [100, 1000, 1000000, 4]))
+# The endings after a Turkish word or number: ordinal (-inci), possessive (-si, -im), then a case (-ya, -de, -den, -deki, -in)
+# or a plural.
+TR_END = r"(?:[iu]?nc[iu])?(?:s?[iu]|[iu]?m(?:[iu]z)?)?(?:[ny]?[aeiu]|n?[dt][ae](?:n|ki)?|n?[iu]n|l[ae]r[iu]?)?"
+# A Turkish no: 'hayir', 'olmaz', 'degil', or a negated verb ('istemiyorum', 'odeyemem', 'etmem'; not 'tamam').
+TR_NOT = r"hayir|olmaz|degil|m[iu]yor|(?<!ta)m[ae]m\b|m[ae]z\b"
+TR_WORDS = dict(zip(TR_DAYS + TR_MONTHS + "hafta ay gelecek onumuzdeki sonraki bu maas sonra".split(),
+                    [d.lower() for d in WEEKDAYS] + MONTH_NAMES + "week month next next next this salary later".split()))
+
+
+def _fold(text):
+    return str(text or "").lower().translate(FOLD)
+
+
+def _turkish():
+    """True when the spec's language is Turkish ('Turkish', 'T\u00fcrk\u00e7e', 'tr-TR'). An English agent reads no Turkish."""
+    return _fold(_spec().get("language"))[:2] in ("tr", "tu")
+
+
+def _tr_stem(tok, stems):
+    """The stem a folded Turkish word is built on ('cumaya' cuma, 'besinde' bes), the longest first ('cumartesi' is no 'cuma')."""
+    for stem in sorted(stems, key=len, reverse=True):
+        if tok.startswith(stem) and re.fullmatch(TR_END, tok[len(stem):]):
+            return stem
+
+
+def _tr_numbers(tokens):
+    """Folded tokens with Turkish numbers as digits: 'bin iki yuz elli' 1250, 'iki bucuk' 2.5, '2 bin 500' 2500, '1.250,50'
+    1250.5. A day ending makes an ordinal, as English '15th': 'on besinde', 'yirmi ucuncu', '15inde' (15'inde), and '15i' or
+    'the on besi'."""
+    out, run = [], []
+    for tok in tokens + [""]:
+        digits = re.fullmatch(r"([\d.,]*\d)(\w*)", tok)
+        # 'ona', 'onu', 'ondan' are the pronoun 'o' and 'onumuzdeki' is 'next', not ten.
+        stem = not digits and not re.fullmatch(r"on(a|u|un|da|dan|lar\w*|umuz\w*)", tok) and _tr_stem(tok, TR_NUM)
+        # A number ends at a word, after an ending or at digits not after yuz, bin or milyon: '15inde 500', '10 30' and 'on 15'
+        # are two numbers, '2 bin 500' is one.
+        if run and (run[-1][1] or digits and run[-1][0] not in (100, 1000, 1e6) or not (digits or stem or tok == "bucuk")):
+            total = cur = last = 0
+            for v, _ in run:
+                if v is None:
+                    cur += last / 2 if last >= 100 else 0.5
+                elif v >= 1000:
+                    total, cur = total + (cur or 1) * v, 0
+                else:
+                    cur = (cur or 1) * 100 if v == 100 else cur + v
+                last = v or last
+            # A possessive alone ('15i', 'the on besi') only after digits or 'the': 'ikisi de' is 'both'. English '15th' stays.
+            day = re.fullmatch(r"[iu]?nc[iu].*|s?[iu]n[dt]?[ae]n?|st|nd|rd|th" + ("|s?[iu]" if type(v) is float or out[-1:] == ["the"] else ""), run[-1][1])
+            out.append("%.12g" % (total + cur) + ("th" if day else ""))
+            run = []
+        if digits:
+            run.append((_num(re.sub(r"\.(?=\d{3}(?!\d))", "", digits.group(1))) or 0.0, digits.group(2)))
+        elif stem or (tok == "bucuk" and run):
+            run.append((TR_NUM.get(stem), tok[len(stem or tok):]))
+        elif tok:
+            out.append(tok)
+    return out
+
+
+def _tr_amount(text):
+    """A Turkish amount as a number: 'bin iki yuz elli lira' 1250, 'iki bucuk' 2.5, '1.250,50 TL' 1250.5, 'yuz lira elli kurus' 100.5.
+    None when no number is said."""
+    out = _tr_numbers(re.findall(r"[\d.,]*\d|[a-z]+", _fold(text))) + [""]
+    nums = [float(t.rstrip("th")) / (100 if n.startswith("kurus") else 1) for t, n in zip(out, out[1:]) if t[:1].isdigit()]
+    # Kurus after the lira is below one.
+    return nums[0] + (nums[1] if nums[1:] and nums[1] < 1 else 0) if nums else None
+
+
+def _day_words(words, today):
+    """Turkish day words as the English ones _resolve_day reads: 'haftaya cuma' next week friday, 'ayin on besinde' month the
+    15th, '23.10.2026' 23 october, 'yarindan sonra' day after tomorrow. Other words are returned as they are."""
+    if not _turkish():
+        return str(words)
+    text = re.sub(r"\b(\d{1,2})[./](0?[1-9]|1[0-2])([./]\d{2,4})?\b", lambda m: m.group(1) + " " + MONTH_NAMES[int(m.group(2)) - 1], _fold(words))
+    text = " " + re.sub(r"[^a-z0-9]+", " ", re.sub(r"(\d)['\u2019]", r"\1", text)) + " "
+    for pat, eng in (("haftaya bugun", WEEKDAYS[today.weekday()] + " next week"), ("(yarindan sonra|obur ?gun|ertesi gun)", "day after tomorrow"),
+                     ("yarin", "tomorrow"), ("bugun", "today"), ("haftaya", "next week"), ("(simdi|hemen|su an)", "now"), ("ayin", "month the"),
+                     (r"on(?= \d| the | \w+day )", "")):
+        text = re.sub(" " + pat + r"\w* ", " " + eng + " ", text)
+    return " ".join(_tr_numbers([TR_WORDS.get(_tr_stem(tok, TR_WORDS)) or tok for tok in text.split()]))
 
 
 def _clock(raw):
@@ -33,8 +133,8 @@ def _clock(raw):
                 return datetime.datetime(int(parts["y"]), int(parts["m"]), int(parts["d"]), int(m.group(4) or 0), int(m.group(5) or 0))
             except Exception:
                 return None
-    low = raw.lower()
-    names = "|".join(n[:3] + "[a-z]*" for n in MONTH_NAMES)
+    low = _fold(raw)
+    names = "|".join(n[:3] + "[a-z]*" for n in MONTH_NAMES + TR_MONTHS)
     m = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(" + names + r")\.?,?\s+(\d{4})", low) or None
     if m:
         d, mo, y = m.group(1), m.group(2), m.group(3)
@@ -45,7 +145,7 @@ def _clock(raw):
         mo, d, y = m.group(1), m.group(2), m.group(3)
     hm = re.search(r"\b(\d{1,2}):(\d{2})\b", low[m.end():])
     try:
-        return datetime.datetime(int(y), [n[:3] for n in MONTH_NAMES].index(mo[:3]) + 1, int(d),
+        return datetime.datetime(int(y), [n[:3] for n in MONTH_NAMES + TR_MONTHS].index(mo[:3]) % 12 + 1, int(d),
                                  int(hm.group(1)) if hm else 0, int(hm.group(2)) if hm else 0)
     except Exception:
         return None
@@ -85,27 +185,27 @@ def _is_business(day, workdays, holidays):
 
 
 def _next_business(day, workdays, holidays, include=False):
-    d = day if include else day + datetime.timedelta(days=1)
+    d = day if include else day + _days(1)
     for _ in range(400):
         if _is_business(d, workdays, holidays):
             return d
-        d = d + datetime.timedelta(days=1)
+        d = d + _days(1)
     return None
 
 
 def _previous_business(day, workdays, holidays):
-    d = day - datetime.timedelta(days=1)
+    d = day - _days(1)
     for _ in range(400):
         if _is_business(d, workdays, holidays):
             return d
-        d = d - datetime.timedelta(days=1)
+        d = d - _days(1)
     return None
 
 
 def _nth_business_after(day, n, workdays, holidays):
     d, count = day, 0
     for _ in range(800):
-        d = d + datetime.timedelta(days=1)
+        d = d + _days(1)
         if _is_business(d, workdays, holidays):
             count += 1
             if count >= n:
@@ -114,10 +214,10 @@ def _nth_business_after(day, n, workdays, holidays):
 
 
 def _last_business_of_week(day, workdays, holidays):
-    start = day - datetime.timedelta(days=day.weekday())
+    start = day - _days(day.weekday())
     best = None
     for i in range(7):
-        d = start + datetime.timedelta(days=i)
+        d = start + _days(i)
         if _is_business(d, workdays, holidays):
             best = d
     return best
@@ -145,6 +245,14 @@ def _deadline(rule, today, workdays, holidays, earliest=None):
     return day
 
 
+def _iso(text):
+    """The date an ISO text starts with; None when it holds none."""
+    try:
+        return datetime.date.fromisoformat(str(text or "")[:10])
+    except Exception:
+        return None
+
+
 def _deadline_day(rule, today, workdays, holidays):
     if not isinstance(rule, dict):
         return None
@@ -156,25 +264,22 @@ def _deadline_day(rule, today, workdays, holidays):
     if kind == "business_days_after_today" and n > 0:
         return _nth_business_after(today, n, workdays, holidays)
     if kind == "calendar_days_after_today" and n >= 0:
-        return today + datetime.timedelta(days=n)
+        return today + _days(n)
     if kind == "fixed_date":
-        try:
-            return datetime.date.fromisoformat(str(rule.get("date"))[:10])
-        except Exception:
-            return None
+        return _iso(rule.get("date"))
     if kind in ("end_of_month", "last_business_day_of_month", "end_of_next_month", "last_business_day_of_next_month"):
-        first = (today.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+        first = (today.replace(day=28) + _days(4)).replace(day=1)
         if "next_month" in kind:
-            first = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-        last = first - datetime.timedelta(days=1)
+            first = (first.replace(day=28) + _days(4)).replace(day=1)
+        last = first - _days(1)
         if kind.startswith("last_business_day"):
             while not _is_business(last, workdays, holidays) and last > today:
-                last = last - datetime.timedelta(days=1)
+                last = last - _days(1)
         return last
     if kind in ("last_business_day_this_week", "last_business_day_next_week"):
         week = _last_business_of_week(today, workdays, holidays)
         if kind == "last_business_day_next_week" or week is None or week < today:
-            week = _last_business_of_week(today + datetime.timedelta(days=7), workdays, holidays)
+            week = _last_business_of_week(today + _days(7), workdays, holidays)
         return week
     return None
 
@@ -183,13 +288,26 @@ def _label(d):
     return d.isoformat() + " (" + WEEKDAYS[d.weekday()] + ", " + str(d.day) + " " + d.strftime("%B") + " " + str(d.year) + ")"
 
 
+def _due_field(band):
+    """The product field a band's deadline is read from (deadline type product_field, such as a statement's due date), else None."""
+    rule = (band or dict()).get("deadline")
+    return isinstance(rule, dict) and rule.get("type") == "product_field" and rule.get("field") or None
+
+
+def _attempts(band, sep):
+    """The band's persuasion attempts after `sep`; nothing when the band gives no count."""
+    n = band.get("persuasion_attempts")
+    return "" if n in (None, "") else sep + "persuasion attempts " + str(n)
+
+
 def _parse_products(spec):
     acc = spec.get("account") or dict()
     field = acc.get("list_field") or "products"
+    amount = acc.get("amount_field") or "past_due"
     # The api_request node's result is flattened under the NODE name (load_account_response...), seen live;
-    # the mapped variable and the tool name are tried as well.
-    candidates = [vars.get("account_products")] + [vars.get(k) for k in list(vars.keys()) if str(k).endswith("_response.data." + field)]
-    for raw in candidates:
+    # the mapped variable and the tool name are tried as well, then the whole data object (a list_field left empty).
+    for raw in ([vars.get("account_products")] + [vars.get(k) for k in list(vars.keys()) if str(k).endswith("_response.data." + field)]
+                + [_var("load_account_response.data")]):
         value = raw
         if isinstance(value, str):
             try:
@@ -199,19 +317,27 @@ def _parse_products(spec):
                     value = json.loads(value.replace("'", '"').replace("True", "true").replace("False", "false").replace("None", "null"))
                 except Exception:
                     value = None
+        # A bank that returns one statement or account returns an object: it is the one product when it holds the amount
+        # field (an error object does not).
+        if isinstance(value, dict) and amount in _flat_product(value):
+            value = [value]
         if isinstance(value, list) and value and all(isinstance(p, dict) for p in value):
             return [_flat_product(p) for p in value]
-    # Flattened keys such as load_account_response.data.products.0.past_due; one source only, the fullest.
-    sources = dict()
-    pattern = re.compile(r"^(account_products|\w+_response\.data\." + re.escape(field) + r")[.\[](\d+)\]?\.([\w.]+)$")
-    for key in list(vars.keys()):
-        m = pattern.search(str(key))
-        if m:
-            sources.setdefault(m.group(1), dict()).setdefault(int(m.group(2)), dict())[m.group(3)] = vars.get(key)
-    if not sources:
-        return []
-    best = sorted(sources.items(), key=lambda kv: (-len(kv[1]), not kv[0].startswith("load_account"), kv[0]))[0][1]
-    return [best[i] for i in sorted(best)]
+    # Flattened keys such as load_account_response.data.products.0.past_due (.data.statement.due_date for an object); else
+    # the whole data object or array flattened (load_account_response.data.due_date), the products that hold the amount
+    # field. One source only, the fullest.
+    for prefix, check in ((r"account_products|\w+_response\.data\." + re.escape(field), False), (r"load_account_response\.data", True)):
+        sources = dict()
+        for key in list(vars.keys()):
+            m = re.search(r"^(" + prefix + r")(?:[.\[](\d+)\]?)?\.([\w.]+)$", str(key))
+            if m:
+                sources.setdefault(m.group(1), dict()).setdefault(int(m.group(2) or 0), dict())[m.group(3)] = vars.get(key)
+        if sources:
+            best = sorted(sources.items(), key=lambda kv: (-len(kv[1]), not kv[0].startswith("load_account"), kv[0]))[0][1]
+            found = [best[i] for i in sorted(best) if not check or amount in best[i]]
+            if found:
+                return found
+    return []
 
 
 def _flat_product(product):
@@ -237,7 +363,8 @@ def _num(value):
         return None
     # An amount the API gives as text: "EUR 1,234.50", "510.00 €", "1.234,50".
     text = re.sub(r"^[A-Za-z\u20ac$\u00a3\u00a5\u20ba\s]+|[A-Za-z\u20ac$\u00a3\u00a5\u20ba\s]+$", "", value)
-    if re.fullmatch(r"\d{1,3}(\.\d{3})+,\d{1,2}|\d+,\d{1,2}", text):
+    # Turkish lira: '1.250 TL' and '\u20ba1.250' are 1250.
+    if re.fullmatch(r"\d{1,3}(\.\d{3})+,\d{1,2}|\d+,\d{1,2}", text) or re.search(r"(?i)tl|\u20ba|lira", value) and re.fullmatch(r"\d{1,3}(\.\d{3})+", text):
         text = text.replace(".", "").replace(",", ".")
     elif re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d+)?", text):
         text = text.replace(",", "")
@@ -323,7 +450,7 @@ def _spoken(template, product, kind=""):
 def _earliest(today):
     """The first day a promise may be made for: today, or tomorrow when the brief says a promise date may not be today."""
     rule = str((_spec().get("calendar") or dict()).get("earliest_promise_day") or "today")
-    return today + datetime.timedelta(days=1) if rule == "tomorrow" else today
+    return today + _days(1) if rule == "tomorrow" else today
 
 
 def _day_line(d, today, workdays, holidays, deadlines):
@@ -355,7 +482,7 @@ def _day_line(d, today, workdays, holidays, deadlines):
     return text
 
 
-MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+MONTHS = MONTH_NAMES
 UNITS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
          "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9}
 TEENS = {"ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
@@ -394,15 +521,15 @@ def _day_number(tokens):
 
 def _resolve_day(words, today):
     """Candidate dates for the customer's own words, relative to the call's today (not the server clock)."""
-    text = re.sub(r"[^a-z0-9 ]", " ", str(words).lower().replace("-", " "))
+    text = re.sub(r"[^a-z0-9 ]", " ", _day_words(words, today).lower().replace("-", " "))
     tokens = text.split()
     if not tokens:
         return []
     joined = " " + " ".join(tokens) + " "
     if " day after tomorrow " in joined:
-        return [today + datetime.timedelta(days=2)]
+        return [today + _days(2)]
     if " tomorrow " in joined:
-        return [today + datetime.timedelta(days=1)]
+        return [today + _days(1)]
     if " today " in joined or " tonight " in joined:
         return [today]
     month = None
@@ -439,34 +566,34 @@ def _resolve_day(words, today):
         if not wd and not month and re.search(r" (right now|now|at the moment|immediately|straight away|this minute) ", joined):
             return [today]
         return []
-    coming = today + datetime.timedelta(days=(wd[0] - today.weekday()) % 7)
+    coming = today + _days((wd[0] - today.weekday()) % 7)
     if " after next " in joined:
-        return [coming + datetime.timedelta(days=7)]
+        return [coming + _days(7)]
     if " next week " in joined:
-        start = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=7)
-        return [start + datetime.timedelta(days=wd[0])]
+        start = today - _days(today.weekday()) + _days(7)
+        return [start + _days(wd[0])]
     # The brief's own convention, when it states one: "next <weekday>" in the calendar week after this one ("this <weekday>"
     # in this week), or the next such day to come.
     rule = str((_spec().get("calendar") or dict()).get("next_weekday") or "")
-    this_week = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=wd[0])
+    this_week = today - _days(today.weekday()) + _days(wd[0])
     if " next " in joined:
         # "next Friday" is the coming one for some callers and the one of next week for others.
-        first = coming if coming > today else coming + datetime.timedelta(days=7)
+        first = coming if coming > today else coming + _days(7)
         if rule == "following_week":
-            return [this_week + datetime.timedelta(days=7)]
+            return [this_week + _days(7)]
         if rule == "coming":
             return [first]
-        return [first, first + datetime.timedelta(days=7)]
+        return [first, first + _days(7)]
     if " this " in joined and rule == "following_week":
         return [this_week]
     if coming == today:
-        return [today, today + datetime.timedelta(days=7)]
+        return [today, today + _days(7)]
     return [coming]
 
 
 VAGUE_DAY = set(["week", "weekend", "fortnight", "month", "year", "payday", "salary", "wage", "pension", "paycheck", "paycheque",
                  "end", "beginning", "start", "mid", "middle", "later", "soon", "next", "after", "before", "until", "till"]
-                + [m for m in MONTHS if m] + [d.lower() for d in WEEKDAYS])
+                + MONTHS + [d.lower() for d in WEEKDAYS])
 
 
 def _named_day(today, workdays, holidays, deadlines):
@@ -503,7 +630,7 @@ def _named_day(today, workdays, holidays, deadlines):
             lines[0] += ". For this the policy says to offer the previous business day: " + _label(prv)
         elif rule == "ask_again":
             lines[0] += ". For this the policy says to ask for another day"
-    said = [d for d in WEEKDAYS if re.search(r"\b" + d.lower() + r"\b", raw.lower())]
+    said = [d for d in WEEKDAYS if re.search(r"\b" + d.lower() + r"\b", _day_words(raw, today).lower())]
     clash = ""
     if said and len(days) == 1 and WEEKDAYS[days[0].weekday()] not in said:
         clash = " The customer said " + said[0] + ", but that date is a " + WEEKDAYS[days[0].weekday()] + "; ask which day they mean."
@@ -551,9 +678,9 @@ def _refused_ids(words, infos):
 
 
 NO_VALUE = set(["", "none", "nothing", "n/a", "na", "null", "nil", "no refusal", "nothing refused", "none refused", "not applicable",
-                "no product", "not refused", "no product refused", "none of the product refused", "yes", "ok"])
+                "no product", "not refused", "no product refused", "none of the product refused", "yes", "ok", "yok"])
 NOT_REFUSAL = set(["accept", "accepted", "agree", "agreed", "applicable", "confirm", "confirmed"])
-BARE_NO = set(["no", "nope", "nah", "not", "never", "won", "t", "can", "cannot", "don", "do", "doesn", "refuse", "refused", "refuse",
+BARE_NO = set(["no", "nope", "nah", "not", "never", "won", "t", "can", "cannot", "don", "do", "doesn", "refuse", "refused",
                "refusal", "flat", "flatly", "decline", "declined", "pay", "paying", "it", "that", "this", "i", "will", "want", "to",
                "way", "now", "sorry", "afford", "the", "a", "offer", "proposal", "customer", "say", "said", "just",
                "those", "these", "them", "either", "both", "of"])
@@ -561,10 +688,11 @@ BARE_NO = set(["no", "nope", "nah", "not", "never", "won", "t", "can", "cannot",
 
 def _no_value(raw):
     """True for the extraction's 'nothing refused' value in any spelling ('None.', 'nothing', 'No refusals', 'N/A (accepted)')."""
-    key = " ".join(t for t in re.findall(r"[a-z/]+", str(raw or "").lower().replace("n't", " not").replace("n’t", " not")))
+    key = " ".join(t for t in re.findall(r"[a-z/]+", _fold(raw).replace("n't", " not").replace("n’t", " not")))
     words = [t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") else t for t in key.split(" ") if t]
     key = " ".join(words)
-    if key in NO_VALUE or set(words) & NOT_REFUSAL:
+    # A Turkish yes ('evet', 'tamam', 'olur', 'kabul ediyorum', 'onayliyorum') unless it is negated ('kabul etmiyorum').
+    if key in NO_VALUE or set(words) & NOT_REFUSAL or re.search(r"\b(evet|tamam|olur|kabul|onay)", key) and not re.search(TR_NOT, key):
         return True
     if words and words[0] in ("yes", "ok", "okay", "sure", "fine", "yeah", "yep", "alright", "correct"):
         # 'yes, credit card' is an acceptance written into the refusal field, not a refusal.
@@ -576,8 +704,10 @@ def _no_value(raw):
 
 def _bare_no(raw):
     """A refusal that names no product ('No.', 'I won't pay that'): it answers what the assistant just proposed."""
-    words = _tokens(raw)
-    return bool(words) and words <= BARE_NO
+    words = _tokens(_fold(raw))
+    # Turkish: a no ('hayir', 'olmaz', 'istemiyorum', 'odeyemem') with nothing else than these words.
+    return bool(words) and (words <= BARE_NO or _turkish() and all(re.search(TR_NOT, w) or re.fullmatch(
+        r"yok|bu(nu)?|o(nu)?|ben|d[ae]|ama|tamam|maalesef|teklif\w*|para\w*|kabul", w) for w in words))
 
 
 def _ids(raw, infos):
@@ -595,26 +725,14 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, rec
     the customer only asked a question back while the first ask to pay every product was still open).
     """
     asked_back = str(vars.get("asked_back") or "").strip(" .'\"").lower() in ("yes", "true")
-    try:
-        counts = json.loads(str(vars.get("refusal_counts") or "{}"))
-        counts = counts if isinstance(counts, dict) else dict()
-    except Exception:
-        counts = dict()
-    try:
-        own = json.loads(str(vars.get("own_offer_products") or "[]"))
-        own = own if isinstance(own, list) else []
-    except Exception:
-        own = []
+    counts = _json_var("refusal_counts", dict)
+    own = _json_var("own_offer_products", list)
     infos = [(pl[0], pl[4]) for pl in plans]
     all_ids = [pl[0] for pl in plans]
     k_of = lambda pid: int(counts.get(pid) or 0)
     recorded = recorded or dict()
     done = lambda pid: bool(set(recorded.get(pid) or []) & set(["add_note", "create_promise"]))
-    try:
-        agreed = json.loads(str(vars.get("agreed_products") or "{}"))
-        agreed = agreed if isinstance(agreed, dict) else dict()
-    except Exception:
-        agreed = dict()
+    agreed = _json_var("agreed_products", dict)
     # The first ask is open while no product has a count or a day or amount of the customer's own.
     first_open = not any(k_of(pid) for pid in all_ids) and not own
     closed = str(vars.get("first_ask_closed") or "") == "yes"
@@ -643,11 +761,7 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, rec
     changed = []
     fresh = []
     refused_now = []
-    try:
-        days_of = json.loads(str(vars.get("own_offer_days") or "{}"))
-        days_of = days_of if isinstance(days_of, dict) else dict()
-    except Exception:
-        days_of = dict()
+    days_of = _json_var("own_offer_days", dict)
     if named_date:
         for pid in _ids(str(vars.get("dated_products") or ""), infos):
             days_of[pid] = named_date
@@ -757,11 +871,7 @@ def _recorded(ids):
     """Per product, the tools that already succeeded for it in this call, e.g. {"p2": ["add_note"]}. The engine keeps only each
     tool's last arguments (<tool>_args.<field>, seen live), so every run adds what it sees to a list kept in a variable.
     Seen live: a note written when a product reached STOP was written again by the closing node."""
-    try:
-        seen = json.loads(str(vars.get("recorded_calls") or "{}"))
-        seen = seen if isinstance(seen, dict) else dict()
-    except Exception:
-        seen = dict()
+    seen = _json_var("recorded_calls", dict)
     args = dict()
     for key in list(vars.keys()):
         m = re.match(r"^(\w+?)_args\.\w+$", str(key))
@@ -790,6 +900,10 @@ def _recorded(ids):
                     seen.setdefault(pid, []).append("note:closed")
     vars["recorded_calls"] = json.dumps(seen, sort_keys=True)
     return seen
+
+
+DONE = (": DONE. Every proposal allowed for it was made and refused: propose no amount and no date for it. Apply the policy for a"
+        " product without a promise.")
 
 
 def _already(tools):
@@ -921,12 +1035,11 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
         nxt = [pid for pid in order if pid in changed and pid in next_of and pid not in dated]
         if nxt and not any(pid in unasked for pid in order[:order.index(nxt[0])]):
             named = nxt[0]
-            now.append(propose + next_of[nxt[0]] + "." + waits)
+            now.append(name_next(named))
         elif changed and not pending and first_open:
-            named = first_open[0]
             # Seen in a chat run: after a product's STOP, a product the first answer left open had no step named.
-            now.append(propose + first_of[first_open[0]] + "." + waits + " If the customer disputed " + first_open[0] + " or said it is"
-                       " already paid, apply the policy for that instead and propose nothing for it.")
+            named = first_open[0]
+            now.append(name_next(named))
     ready = [name for name in offered if name in accepted_names or (str((details or dict()).get(name) or "").startswith("the day the customer gave, ")
                                                                     and "is not accepted as it is" not in str((details or dict()).get(name)))]
     if (fresh and offered and ready == offered and not pending and not unasked and not stopped and not _amount_named(vars.get("named_amount_words"))
@@ -1030,8 +1143,7 @@ def _wrap_up(plans, counts, own, owed=None, details=None, recorded=None, agreed=
                          " Read it back and record it after the confirmation the policy asks for, unless its promise is already recorded.")
         elif k > _total((pid, label, steps, allowed)):
             stopped += 1
-            lines.append(pid + " " + label + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date"
-                         " for it. Apply the policy for a product without a promise." + _already(recorded.get(pid)))
+            lines.append(pid + " " + label + DONE + _already(recorded.get(pid)))
         else:
             return False, "", ""
     if not stopped or not (offered or promised):
@@ -1052,11 +1164,14 @@ AMOUNT_WORDS = ("hundred", "thousand", "half", "fifty", "twenty", "thirty", "for
 
 def _amount_named(raw):
     """True when the extraction holds an amount of the customer's own ('300', 'two hundred', 'half of it')."""
-    raw = str(raw or "").strip().lower()
-    if raw.strip(" .'\"") in ("", "none", "n/a", "null", "no", "nothing"):
+    raw = _fold(str(raw or "").strip())
+    if raw.strip(" .'\"") in ("", "none", "n/a", "null", "no", "nothing", "yok", "hayir"):
         return False
     if re.search(r"\d", raw) or re.search(r"\b(" + "|".join(AMOUNT_WORDS) + r")\b", raw):
         return True
+    if _turkish():
+        # A number above one or a half ('yarisi') is an amount; the whole debt ('tamami', 'hepsi', 'tum borc') is not.
+        return (_tr_amount(raw) or 0) > 1 or "yari" in raw or not re.search(r"\b(tamam|hep|tum|butun|toplam|borc)", raw)
     # "the minimum", "one instalment", "a part of it": an amount other than the full one, which the fixed line would misread.
     return not re.search(r"\b(full|all|everything|whole|entire|total|lot|owed|owe)\b", raw)
 
@@ -1073,10 +1188,14 @@ def _confirm_question(spec):
     return "Do you confirm?"
 
 
+def _english(spec):
+    return str(spec.get("language") or "English").strip().lower().startswith("en")
+
+
 def _readback_line(spec, items):
     """The read-back said as a fixed line, with no model call, on the turn the last proposal is refused. `items` holds
     (spoken name, amount, date) for each product the customer gave a day for. English only: the line is written in English."""
-    if not items or not str(spec.get("language") or "English").strip().lower().startswith("en"):
+    if not items or not _english(spec):
         return ""
     parts = [name + ", " + amount + " on " + WEEKDAYS[d.weekday()] + ", " + str(d.day) + " " + d.strftime("%B")
              for name, amount, d in items]
@@ -1098,13 +1217,13 @@ def run():
     bands = acc.get("bands") or []
     lines = []
     lines.append("Now: " + _label(today) + " " + now.strftime("%H:%M") + ". Today is " + ("a business day." if _is_business(today, workdays, holidays) else "NOT a business day."))
-    tomorrow = today + datetime.timedelta(days=1)
+    tomorrow = today + _days(1)
     lines.append("Tomorrow: " + _label(tomorrow) + ", " + ("a business day." if _is_business(tomorrow, workdays, holidays) else "NOT a business day."))
     nb = _next_business(today, workdays, holidays)
     if nb:
         lines.append("Next business day after today: " + _label(nb) + ".")
     lb = _last_business_of_week(today, workdays, holidays)
-    lbn = _last_business_of_week(today + datetime.timedelta(days=7), workdays, holidays)
+    lbn = _last_business_of_week(today + _days(7), workdays, holidays)
     earliest = _earliest(today)
     if lb and lb < earliest:
         # Seen in an audit: on a Saturday the plan proposed yesterday. The week's last business day is then next week's.
@@ -1116,20 +1235,20 @@ def run():
         lines.append("Last business day of the current calendar week (Monday to Sunday): " + _label(lb) + ". Today " + ("IS" if lb == today else "is NOT") + " that day.")
     if lbn:
         lines.append("Last business day of the following calendar week: " + _label(lbn) + ".")
-    week_start = today - datetime.timedelta(days=today.weekday())
-    this_week = [week_start + datetime.timedelta(days=i) for i in range(7)]
-    next_week = [d + datetime.timedelta(days=7) for d in this_week]
+    week_start = today - _days(today.weekday())
+    this_week = [week_start + _days(i) for i in range(7)]
+    next_week = [d + _days(7) for d in this_week]
     lines.append("Weekdays of the current calendar week: " + "; ".join(WEEKDAYS[d.weekday()] + " " + d.isoformat() for d in this_week) + ".")
     lines.append("Weekdays of the following calendar week: " + "; ".join(WEEKDAYS[d.weekday()] + " " + d.isoformat() for d in next_week) + ".")
     band_lines = []
-    far = today + datetime.timedelta(days=21)
+    far = today + _days(21)
     for band in bands:
         dl = _deadline(band.get("deadline"), today, workdays, holidays, earliest)
         band["_deadline"] = dl
         if dl and dl > far:
             far = dl
         for_types = (" for " + ", ".join(str(t) for t in band.get("product_types"))) if band.get("product_types") else ""
-        band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + for_types + "): deadline " + (_label(dl) if dl else "see policy") + ", persuasion attempts " + str(band.get("persuasion_attempts")) + ".")
+        band_lines.append("Band " + str(band.get("name")) + " (" + str(acc.get("segment_field") or "segment") + " " + str(band.get("min")) + " to " + str(band.get("max")) + for_types + "): deadline " + (_label(dl) if dl else "each product's " + _due_field(band) if _due_field(band) else "see policy") + _attempts(band, ", ") + ".")
     if band_lines:
         lines.append("Deadlines computed from today: " + " ".join(band_lines))
     products = _parse_products(spec)
@@ -1140,6 +1259,10 @@ def run():
     id_field = acc.get("id_field") or "product_id"
     type_field = acc.get("type_field") or "type"
     types = acc.get("product_types") or []
+    for i, p in enumerate(products):
+        # A product without an id (a single statement) is named by its place in the list, so the facts and the promise can name it.
+        if p.get(id_field) in (None, ""):
+            p[id_field] = str(i + 1)
     recorded = _recorded([str(p.get(id_field)) for p in products])
     # Two products of one type share a spoken name; the id tells them apart, for the agent and for the words counted.
     spoken_names = [_spoken(_for_type(names, str(p.get(type_field) or ""), types), p, str(p.get(type_field) or "")) for p in products]
@@ -1151,7 +1274,7 @@ def run():
     product_deadlines = []
     plans = []
     for index, p in enumerate(products):
-        kind = str(p.get(type_field) or "")
+        kind, pid, amount = str(p.get(type_field) or ""), str(p.get(id_field)), _money(p.get(amount_field))
         seg_raw = p.get(seg)
         seg_value = _num(seg_raw)
         if seg_value is None and isinstance(seg_raw, str):
@@ -1166,7 +1289,10 @@ def run():
                     continue
                 lo, hi = _num(b.get("min")), _num(b.get("max"))
                 named = isinstance(seg_raw, str) and str(b.get("name") or "").strip().lower() == seg_raw.strip().lower()
-                if named or (seg_value is not None and (lo is None or seg_value >= lo) and (hi is None or seg_value <= hi)):
+                # A band with open bounds (none given, or 0 to 1e9 as the spec reader fills them) takes every product, also one
+                # without the segment field (a single statement has no days late).
+                if (named or (lo or 0) <= 0 and (hi is None or hi >= 1e9)
+                        or (seg_value is not None and (lo is None or seg_value >= lo) and (hi is None or seg_value <= hi))):
                     band = b
                     break
             if band:
@@ -1181,23 +1307,29 @@ def run():
         if _num(floor) is not None and _num(p.get(amount_field)) is not None and _num(floor) > _num(p.get(amount_field)):
             floor_field, floor = str(floor_field) + ", at most the amount owed", _num(p.get(amount_field))
         dl = band.get("_deadline") if band else None
+        if _due_field(band):
+            # The product's own date (a statement's due date) is its deadline, as a fixed date is; a missing, unreadable or
+            # past date gives none ('see policy').
+            due = _clock(p.get(str(_due_field(band))))
+            dl = _deadline({"type": "fixed_date", "date": str(due.date())}, today, workdays, holidays, earliest) if due and due.date() >= earliest else None
+            far = max(far, dl or far)
         product_deadlines.append(dl)
-        owed[str(p.get(id_field))] = " (amount owed now " + _money(p.get(amount_field)) + "; deadline " + (_label(dl) if dl else "see policy") + ")"
-        owed_amount[str(p.get(id_field))] = _money(p.get(amount_field))
-        text = str(index + 1) + ". " + id_field + " " + str(p.get(id_field)) + ": " + spoken_names[index]
+        owed[pid] = " (amount owed now " + amount + "; deadline " + (_label(dl) if dl else "see policy") + ")"
+        owed_amount[pid] = amount
+        text = str(index + 1) + ". " + id_field + " " + pid + ": " + spoken_names[index]
         # A product at STOP is shown without its floor, plan and raw record: seen live, the model offered the floor it saw.
-        done_rows.append(text + ": DONE. Every proposal allowed for it was made and refused: propose no amount and no date for it."
-                         " Apply the policy for a product without a promise." + _already(recorded.get(str(p.get(id_field)))))
-        text += "; amount owed now (" + amount_field + ") " + _money(p.get(amount_field))
-        text += "; " + seg + " " + str(p.get(seg))
+        done_rows.append(text + DONE + _already(recorded.get(pid)))
+        text += "; amount owed now (" + amount_field + ") " + amount
+        if p.get(seg) is not None:
+            text += "; " + seg + " " + str(p.get(seg))
         if band:
-            text += "; band " + str(band.get("name")) + "; deadline " + (_label(dl) if dl else "see policy") + "; persuasion attempts " + str(band.get("persuasion_attempts"))
+            text += "; band " + str(band.get("name")) + "; deadline " + (_label(dl) if dl else "see policy") + _attempts(band, "; ")
         if floor is not None:
             text += "; floor (" + str(floor_field) + ") " + _money(floor)
         plan = band.get("attempt_plan") if band else None
         steps = []
         if isinstance(plan, list) and plan:
-            tokens = {"amount": _money(p.get(amount_field)), "floor": _money(floor) if floor is not None else "the floor",
+            tokens = {"amount": amount, "floor": _money(floor) if floor is not None else "the floor",
                       "deadline": _label(dl) if dl else "the deadline", "next_business_day": _label(nb) if nb else "the next business day",
                       "last_business_day_this_week": _label(lb) if lb else "the last business day of this week",
                       "last_business_day_next_week": _label(lbn) if lbn else "the last business day of next week"}
@@ -1223,7 +1355,7 @@ def run():
             chain = ["after the first ask is refused: attempt 1: " + steps[0]]
             for i in range(1, len(steps)):
                 chain.append("after attempt " + str(i) + " is refused: attempt " + str(i + 1) + ": " + steps[i])
-            chain.append("after attempt " + str(len(steps)) + " is refused: STOP, no more payment proposals for " + str(p.get(id_field))
+            chain.append("after attempt " + str(len(steps)) + " is refused: STOP, no more payment proposals for " + pid
                          + " (it gets " + str(len(steps)) + (" proposal" if len(steps) == 1 else " proposals") + " after the first ask, even if another product gets more); apply the policy for a product without a promise")
             text += "; PERSUASION PLAN, the complete list of proposals for this product, one step per refusal or non-answer, nothing else in between: " + " | ".join(chain)
         text += ". Raw: " + json.dumps(p, sort_keys=True)
@@ -1238,7 +1370,7 @@ def run():
             counts_of = [_num(b.get("persuasion_attempts")) for b in bands]
             counts_of = [int(c) for c in counts_of if c is not None]
             allowed = min(counts_of) if counts_of else None
-        plans.append((str(p.get(id_field)), spoken, steps, allowed, (_tokens(spoken) | _tokens(kind.replace("_", " ")) | _tokens(p.get(id_field))) - NAME_STOP,
+        plans.append((pid, spoken, steps, allowed, (_tokens(spoken) | _tokens(kind.replace("_", " ")) | _tokens(pid)) - NAME_STOP,
                       _money(floor) if floor is not None else ""))
     deadlines = []
     for index, p in enumerate(products):
@@ -1248,14 +1380,14 @@ def run():
         deadlines = [("band " + str(b.get("name")), b.get("_deadline")) for b in bands if b.get("_deadline")]
     vars["named_day_facts"] = vars.get("named_day_facts") or "No exact day named yet."
     day_words = str(vars.get("named_day_words") or "").strip()
-    given = day_words.strip(" .'\"").lower() not in ("", "none", "n/a", "null", "no")
+    given = day_words.strip(" .'\"").lower() not in ("", "none", "n/a", "null", "no", "yok")
     try:
         resolved = _resolve_day(day_words, today) if given else []
     except Exception:
         resolved = []
     # Words that name no day ('then', 'that day', 'yes'), seen extracted at confidence 0.95, are no day of the customer's
     # own: counted as one, they hid the next proposal. A vague period ('next month', 'when my salary comes') still is.
-    day_named = bool(resolved) or (given and bool(_tokens(day_words) & VAGUE_DAY))
+    day_named = bool(resolved) or (given and bool(_tokens(_day_words(day_words, today)) & VAGUE_DAY))
     named_date = resolved[0].isoformat() if len(resolved) == 1 else None
     count = len(rows)
     own_before, days_before = str(vars.get("own_offer_products") or "[]"), str(vars.get("own_offer_days") or "{}")
@@ -1275,10 +1407,10 @@ def run():
     d = today
     # The code node gets at most 128 KB of code and call data together, and this calendar is part of the data: it stops after
     # about six weeks. A day named later than that still gets its NAMED DAY CHECK.
-    far = min(far, today + datetime.timedelta(days=38))
-    while d <= far + datetime.timedelta(days=7):
+    far = min(far, today + _days(38))
+    while d <= far + _days(7):
         days.append(_day_line(d, today, workdays, holidays, open_deadlines))
-        d = d + datetime.timedelta(days=1)
+        d = d + _days(1)
     lines.append("Calendar, one line per day from today. When the customer names a day, find its line and apply the policy to what the line says:\n" + "\n".join(days))
     vars["date_facts"] = "\n".join(lines)
     _named_day(today, workdays, holidays, open_deadlines)
@@ -1286,17 +1418,10 @@ def run():
     # is (not past, a business day, on or before the product's deadline) is read back; any other day is settled first.
     details = dict()
     settled = []
-    try:
-        days_of = json.loads(str(vars.get("own_offer_days") or "{}"))
-        days_of = days_of if isinstance(days_of, dict) else dict()
-    except Exception:
-        days_of = dict()
+    days_of = _json_var("own_offer_days", dict)
     for pid, label, _s, _a, _t, _f in plans:
         iso = str(days_of.get(pid) or "")
-        try:
-            day = datetime.date.fromisoformat(iso[:10]) if iso else None
-        except Exception:
-            day = None
+        day = _iso(iso)
         text = "the amount owed now, " + owed_amount.get(pid, "the amount owed") + ", unless the customer named another amount"
         if pid in agreed:
             # An accepted proposal is read back as proposed, with the day the customer gave instead when they gave one.
@@ -1337,7 +1462,7 @@ def run():
     pitch = ""
     if (len(plans) > 1 and not done and changed and not day_named and not dated_now and not accepted_now and not question
             and not _amount_named(vars.get("named_amount_words")) and str(vars.get("plain_refusal") or "").strip().lower() == "yes"
-            and str(spec.get("language") or "English").strip().lower().startswith(("en", "eng"))):
+            and _english(spec)):
         refused = re.findall(r"\d[\d,]*(?:\.\d+)?", str(vars.get("proposed_amount") or ""))
         pitch = _proposal_line(vars["next_step"], plans, changed, recorded, _num(refused[0].replace(",", "")) if refused else None)
     if pitch:
@@ -1352,20 +1477,13 @@ def run():
     if _amount_named(vars.get("named_amount_words")):
         vars["amount_named"] = "yes"
     vars["named_amount_words"] = "none"
-    try:
-        said = json.loads(str(vars.get("readback_said") or "{}"))
-        said = said if isinstance(said, dict) else dict()
-    except Exception:
-        said = dict()
+    said = _json_var("readback_said", dict)
     say = ""
     if done:
         ids, items = [], []
         for pid, label, _s, _a, _t, _f in plans:
             if int(counts.get(pid) or 0) == 0 and pid in settled and "create_promise" not in (recorded.get(pid) or []):
-                try:
-                    day = datetime.date.fromisoformat(str(days_of.get(pid) or "")[:10])
-                except Exception:
-                    day = None
+                day = _iso(days_of.get(pid))
                 ids.append((pid, label))
                 items.append((label, owed_amount.get(pid, ""), day))
         key = dict((pid, str(days_of.get(pid) or "")[:10]) for pid, _ in ids)
@@ -1378,9 +1496,8 @@ def run():
             # Seen live: on the turn of the last refusal the model kept the pattern of its earlier proposals and made one more
             # for a finished product, whatever the step said. A fixed line has no pattern to follow. Only once per call, only
             # on a plain refusal turn, and never after the customer named an amount of their own (the line reads the amount owed).
-            # The fixed line is English; an agent that speaks another language reads back in its own words.
-            english = str(spec.get("language") or "English").strip().lower().startswith(("en", "eng"))
-            if english and not said and prev_done != "yes" and changed and not day_named and vars.get("amount_named") != "yes":
+            # The fixed line is English (_readback_line); an agent that speaks another language reads back in its own words.
+            if not said and prev_done != "yes" and changed and not day_named and vars.get("amount_named") != "yes":
                 say = _readback_line(spec, items)
             new_step = ""
             if say:
@@ -1414,7 +1531,7 @@ def run():
                     " is on or before every product's deadline only if it is on or before " + first.isoformat() + "; "
                     + "; ".join(name + " deadline " + dl.isoformat() for name, dl in known) + ".")
     if rows:
-        vars["account_facts"] = "Late products, in the order the bank returned them:\n" + "\n".join(rows)
+        vars["account_facts"] = "Products, in the order the bank returned them:\n" + "\n".join(rows)
         vars["product_count"] = str(count)
         vars["facts_state"] = "ready"
     elif _load_failure():

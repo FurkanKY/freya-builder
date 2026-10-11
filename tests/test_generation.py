@@ -137,3 +137,50 @@ def test_generate_consensus_waits_for_a_first_read_as_long_as_the_budget_allows(
 def test_reads_wanted_falls_back_to_three():
     from builder.build import reads_wanted
     assert [reads_wanted(v) for v in (None, "", "x", "0", "2", " 4 ", "9")] == [3, 3, 3, 1, 2, 4, 5]
+
+
+def test_the_rule_register_is_capped_and_coverage_may_be_empty():
+    from builder.generate import MAX_RULES, SCHEMA
+    rules = [{"source": "analiz.docx", "rule": f"rule {i}"} for i in range(90)]
+    coverage = [{"rule": 3, "location": "policy"}, {"rule": 75, "location": "policy"}, {"rule": "x", "location": "policy"}]
+    data = parse_response(json.dumps({"spec": {"language": "Turkish"}, "rules": rules, "coverage": coverage}))
+    assert len(data["rules"]) == MAX_RULES == 60 and [c["rule"] for c in data["coverage"]] == [3, "x"]
+    assert parse_response(json.dumps({"spec": {}, "rules": rules[:2], "coverage": []}))["coverage"] == []
+    assert "at most 60" in SCHEMA
+
+
+def test_case_prompt_names_the_operations_no_role_maps():
+    api = {"servers": [{"url": "https://mock.example/v1"}], "paths": {
+        "/kimlik-dogrula": {"post": {"operationId": "verify_identity"}},
+        "/musteri/{musteri_no}/ekstre": {"get": {"operationId": "get_account"}},
+        "/odeme-linki": {"post": {"operationId": "send_payment_link"}},
+        "/sms/gonder": {"post": {}}}}
+    roles = {"verify_identity": "POST /kimlik-dogrula", "get_account": "GET /musteri/{musteri_no}/ekstre"}
+    prompt = make_prompt({"briefs": [{"path": "BRIEF.md", "text": "x"}], "api": api, "roles": roles})
+    names = prompt.split("TOOL NAMES:")[1].split("\n")[0]
+    assert "send_payment_link = POST /odeme-linki" in names and "gonder = POST /sms/gonder" in names
+    assert "verify_identity = POST /kimlik-dogrula" in names and "get_account = GET" in names and "= GET" not in names.split("other operations")[1]
+    assert "does not exist for this bank: never name it" in names and "in the after_verification checklist" in names
+    # Practice inputs carry no roles: no TOOL NAMES section.
+    assert "TOOL NAMES:" not in make_prompt({"briefs": [{"path": "b.md", "text": "x"}], "api": api})
+
+
+def test_a_spec_without_a_language_takes_the_documents_language(tmp_path, monkeypatch):
+    import asyncio
+    from pathlib import Path
+    from builder import generate as gen
+    from builder.runtime import Budget, Trace
+    root = Path(__file__).resolve().parent.parent
+    api = json.loads((root/"vendor/kit-v3/tools/openapi.json").read_text())
+    spec = json.loads((root/"tests/fixtures/spec_sample.json").read_text())
+    spec.pop("language")
+    good = {"rules": [{"source": "x", "rule": "y"}], "coverage": [], "spec": spec}
+    async def fake(prompt, trace, model, cwd, purpose, budget, timeout=600):
+        return json.dumps(good)
+    monkeypatch.setattr(gen, "ask_model", fake)
+    turkish = "Asistan müşteriyi selamlar, kimliğini doğrular ve ödeme sözü alır. Borç ödenmezse gecikme işler. " * 5
+    inputs = {"briefs": [{"path": "analiz.docx", "text": turkish}], "api": api}
+    data = asyncio.run(gen.generate(inputs, None, Budget(1800), Trace(tmp_path/"trace.jsonl", secrets=[]), "m", tmp_path))
+    assert data["spec"]["language"] == "Turkish" and "Language: Turkish." in data["workflow"]["system_prompt"]
+    assert any("spec.language is missing" in i for i in gen.validate_spec(spec, api))
+    assert gen.document_language([{"path": "b.md", "text": "The agent greets the customer and verifies identity. " * 20}]) is None

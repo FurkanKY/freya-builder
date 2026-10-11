@@ -9,6 +9,7 @@ import json
 import re
 import os
 import tokenize
+import urllib.parse
 from pathlib import Path
 
 SNIPPETS = Path(__file__).resolve().parent / "snippets"
@@ -53,6 +54,16 @@ Send dates to tools in the format the tool field or the security question states
 BRIEF_THINKING = """Think briefly before each reply, in a few short lines at most: which product and step you are on, the matching line of ACCOUNT FACTS or DATE FACTS, and what to say or call. Do not restate the policy to yourself. Then always give the reply."""
 
 CLOSE_RULE = """Ending the call: say the required closing words (thank the customer, goodbye) and call close_call in that same message with the outcome and reason that the policy prescribes. close_call is always the very last tool call and is called exactly once."""
+# A bank without a closing tool: the model ends the call itself through a tool-call transition (workflow-format.md).
+END_CALL = "End the call. Call it in the same message as the closing words, once nothing more is to be said or done."
+CLOSE_RULE_NO_TOOL = """Ending the call: say the required closing words (thank the customer, goodbye), then end the call: call transition_to_hang_up in that same message. It is always the very last step. This bank has no tool that records the call's outcome: never say an outcome was recorded."""
+# What the agent must not claim when the bank has no tool for a job; the policy may still describe the job.
+NO_TOOL = {
+    "create_promise": "This bank has no tool that records a payment promise: agree the promise in words and never say it was recorded.",
+    "add_note": "This bank has no note tool: never say a note was made.",
+    "schedule_callback": "This bank has no callback tool: never say a callback was booked.",
+    "transfer_to_agent": "This bank has no transfer tool: never say the call is being transferred.",
+}
 
 
 # Seen live (Sunday 11:55): the platform's code_exec takes at most 131072 bytes of code and call data together. With the
@@ -137,7 +148,7 @@ ANSWER_WRONG = ["false", "0", "incorrect", "wrong", "no_match", "nomatch", "mism
                 "not_verified", "unverified"]
 
 
-def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_value=None, max_wrong=None):
+def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_value=None, max_wrong=None, one_call=False):
     right = sorted(set(ANSWER_RIGHT) | ({str(answer_value).lower()} if answer_value not in (None, "") else set()))
     lines = [
         "def _get(d, path):",
@@ -165,6 +176,14 @@ def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_va
         lines += [
             f"            if str(_get(d, {flag!r})).lower() in {sorted({'true', str(complete_value).lower()} - {'none', ''})!r}:",
             "                note = 'Identity is fully verified. Continue exactly as the policy says after verification.'",
+        ] + ([
+            # All the answers in one request: anything short of the full check is a failed check.
+            "            else:",
+            "                note = " + _py_literal(
+                "Identity is NOT verified: the service did not accept all the answers. Apply the policy for wrong answers (count"
+                " them as the policy says); where it allows another try, ask again only what it allows and call verify_identity once"
+                " more with all the answers."),
+        ] if one_call else [
             # A per-answer result can be a boolean or a word (MATCH, correct); a value that is neither says nothing.
             f"            elif str(_get(d, {(answer_flag or 'verified')!r})).strip().lower() in {right!r}:",
             "                note = 'This answer is correct. Ask the next security question as the policy says.'",
@@ -178,13 +197,15 @@ def _post_hook(tool, flag=None, answer_flag=None, complete_value=None, answer_va
                 " policy says."),
             "            else:",
             "                note = 'The service did not say whether this answer was correct, and identity is not verified yet. If the response shows fewer tries left than before, treat it as wrong; otherwise ask the next security question as the policy says.'",
+        ]) + [
             "            if d.get('hint'):",
             "                note = note + ' The service returned hint ' + str(d.get('hint')) + '; apply the policy rule for it.'",
             # A failed request (the bank's 5xx) checked nothing: it is no wrong answer, and the same answer can be sent again.
             "        elif failed:",
             "            note = 'verify_identity FAILED (' + str(d.get('error') or 'service error')[:120] + '): the service did not check"
             " this answer, so it is neither right nor wrong and is not counted as a wrong answer. Apply the policy for a failed tool;"
-            " where it says nothing, call verify_identity once more with the same field and answer, without asking the customer again.'",
+            " where it says nothing, call verify_identity once more with the same " + ("answers" if one_call else "field and answer")
+            + ", without asking the customer again.'",
             "        else:",
             "            note = 'The service could not use this answer (ok false: ' + str(d.get('error') or 'no reason') + '). Ask the customer again; apply the policy.'",
         ]
@@ -234,6 +255,9 @@ def _leaf(schema, default, description=None):
 
 
 HTTP_METHODS = ("post", "put", "patch", "get", "delete")
+# A case's API (case.apply_roles) carries this key: its tools are found by operationId only.
+BY_OPERATION_ID = "x-tools-by-operation-id"
+ASCII = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
 
 
 def _norm(name):
@@ -247,16 +271,46 @@ def _tail(path):
 
 
 def _find(api, tool):
-    """The (path, method) of a tool: by path tail, then operationId, then a normalised path tail (get-account)."""
+    """The (path, method) of a tool: by operationId first (a case's role mapping), then path tail, then a normalised path
+    tail (get-account). A case's API names its tools by operationId only: a path ending in a role word is no tool there."""
     paths = api["paths"]
-    for test in (lambda p, m, op: _tail(p) == tool,
-                 lambda p, m, op: _norm(op.get("operationId")) == tool,
-                 lambda p, m, op: _norm(_tail(p)) == tool):
+    tests = [lambda p, op: _norm(op.get("operationId")) == tool]
+    if not api.get(BY_OPERATION_ID):
+        tests += [lambda p, op: _tail(p) == tool, lambda p, op: _norm(_tail(p)) == tool]
+    for test in tests:
         for path, item in paths.items():
             for method in HTTP_METHODS:
-                if isinstance(item.get(method), dict) and test(path, method, item[method]):
+                if isinstance(item, dict) and isinstance(item.get(method), dict) and test(path, item[method]):
                     return path, method
     return None, None
+
+
+def _tool_base(name):
+    """snake_case of an operation name: Turkish letters as ASCII, then camelCase split (borçSorgula -> borc_sorgula)."""
+    name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(name or "").translate(ASCII))
+    return _norm(name)[:48].strip("_")
+
+
+def extra_tools(api):
+    """{tool name: (path, method)} of the operations no built-in tool uses. The name comes from the operationId, else the path
+    tail, else the method and path; it is never a built-in tool's name and each is used once. case.apply_roles writes it as
+    the operationId."""
+    roles = {_find(api, t) for t in TOOL_NAMES}
+    names = {}
+    for path, item in api["paths"].items():
+        for method in HTTP_METHODS:
+            op = item.get(method) if isinstance(item, dict) else None
+            if not isinstance(op, dict) or (path, method) in roles:
+                continue
+            base = _tool_base(op.get("operationId") or op.get("x-contract-operation-id")) or _tool_base(_tail(path))
+            if not base or base in TOOL_NAMES:
+                base = _tool_base(method + " " + path)
+            name, n = base, 1
+            while name in TOOL_NAMES or name in names:
+                n += 1
+                name = f"{base}_{n}"
+            names[name] = (path, method)
+    return names
 
 
 def _method(api, tool):
@@ -270,44 +324,176 @@ def operation(api, tool):
     return api["servers"][0]["url"].rstrip("/") + "/" + path.lstrip("/"), api["paths"][path][method]
 
 
-def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
-    url, op = operation(api, tool)
-    schema = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
-    hints = (spec.get("tool_field_hints") or {}).get(tool, {})
-    call_vars = set(spec.get("call_variables") or []) | {"customer_id"}
-    # The clock or a variable named like a fact the agent settles (date, time, amount) is never baked into a tool field:
-    # a clock called 'date' would fix every promise date to the call's start.
+def _body_schema(op):
+    return (((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}).get("schema") or {}
+
+
+def _params(api, path, op):
+    """The path, query and header parameters of an operation, the operation's own over its path's. A {name} in the path
+    that no parameter declares is a required string path parameter."""
+    found = {("path", n): {"name": n, "in": "path", "required": True, "schema": {"type": "string"}}
+             for n in re.findall(r"\{([^{}/]+)\}", path)}
+    for param in list((api["paths"].get(path) or {}).get("parameters") or []) + list(op.get("parameters") or []):
+        if isinstance(param, dict) and param.get("name") and param.get("in") in ("path", "query", "header"):
+            found[(param["in"], param["name"])] = param
+    return found
+
+
+def _enum_prop(props, name):
+    """The request property holding the allowed values: the one called name, else the only enum property."""
+    enums = [k for k, v in props.items() if isinstance(v, dict) and v.get("enum")]
+    return name if name in enums else enums[0] if len(enums) == 1 else None
+
+
+def _alike(name, variables):
+    """The variable named like name but for case and separators (musteriNo, musteri_no)."""
+    flat = _norm(name).replace("_", "")
+    return next((v for v in sorted(variables) if _norm(v).replace("_", "") == flat), None)
+
+
+def _call_vars(spec):
+    """(every call variable, those a tool field may take). The clock or a variable named like a fact the agent settles (date,
+    time, amount) is never baked into a tool field: a clock called 'date' would fix every promise date to the call's start."""
     from .spec import FACT_TOKENS
-    named = set(call_vars)
-    call_vars = set(v for v in call_vars if v != spec.get("now_variable") and str(v).lower() not in FACT_TOKENS)
+    named = set(spec.get("call_variables") or []) | {"customer_id"}
+    return named, set(v for v in named if v != spec.get("now_variable") and str(v).lower() not in FACT_TOKENS)
+
+
+def _per_answer(spec, props):
+    """True when the identity request checks one answer per call: a field enum that names every question's field, or a body
+    with neither a field of its own for each question (also inside an object field) nor a list of answers. Names are compared
+    but for case and separators (dogum_tarihi, DOGUM_TARIHI, dogumTarihi)."""
+    flat = lambda names: {_norm(n).replace("_", "") for n in names}
+    enum = _enum_prop(props, "field")
+    fields = flat(str(q.get("field")) for q in (spec.get("identity") or {}).get("questions") or [] if isinstance(q, dict))
+    inner = [v for v in props.values() if isinstance(v, dict)]
+    own = flat(props) | flat(k for v in inner for k in (v.get("properties") or {}))
+    listed = any(v.get("type") == "array" for v in inner)
+    return (enum is not None and fields <= flat(map(str, props[enum]["enum"]))) or not (fields <= own or listed)
+
+
+def _engine_source(api, name, call_vars):
+    """The variable an engine-run call (no model) takes a parameter from when no call variable has its name: a call
+    variable of the same normalised name, else the identity check's response field or argument of that name."""
+    same = _alike(name, call_vars)
+    if same:
+        return same
+    path, method = _find(api, "verify_identity")
+    if path is None:
+        return None
+    op = api["paths"][path][method]
+    out = next((r for c, r in sorted((op.get("responses") or {}).items()) if str(c).startswith("2") and isinstance(r, dict)), {})
+    out = (((out.get("content") or {}).get("application/json") or {}).get("schema") or {}).get("properties") or {}
+    if name in out:
+        return f"verify_identity_response.data.{name}"
+    if name in (_body_schema(op).get("properties") or {}) or any(n == name for _, n in _params(api, path, op)):
+        return f"verify_identity_args.{name}"
+    return None
+
+
+# Credentials are the mock's business: the compiler never sends an auth header the contract declares.
+AUTH_HEADER = re.compile(r"auth|api[-_]?key|token|secret|cookie|signature|session|content-type|^accept$", re.I)
+
+
+def _param_hook(moved):
+    """Pre-hook: each (where, name, variable, keep) parameter takes the model's body field of its name (removed from the body
+    unless the API's body has it too), else the variable, and goes into the URL path, the query or the headers."""
+    return (
+        "try:\n    import json, urllib.parse\n"
+        f"    moved = json.loads({_py_literal(json.dumps(moved))})\n"
+        "    env = vars if isinstance(vars, dict) else dict()\n"
+        "    b = config.get('body')\n    b = b if isinstance(b, dict) else dict()\n"
+        "    h = config.get('headers')\n    h = h if isinstance(h, dict) else dict()\n"
+        "    u = str(config.get('url') or '')\n"
+        "    for where, name, var, keep in moved:\n"
+        "        v = b.get(name) if keep else b.pop(name, None)\n"
+        "        if (v in (None, '') or str(v).startswith(chr(123))) and var:\n            v = env.get(var)\n"
+        "        v = '' if v is None else str(v).strip()\n"
+        "        if not v or v.startswith(chr(123)):\n            continue\n"
+        "        if where == 'path':\n            q = urllib.parse.quote(v, safe='')\n"
+        "            u = u.replace(chr(123) * 2 + name + chr(125) * 2, q).replace(chr(123) + name + chr(125), q)\n"
+        "        elif where == 'query':\n            u = u + ('&' if '?' in u else '?') + urllib.parse.urlencode([(name, v)])\n"
+        "        else:\n            h[name] = v\n"
+        "    config['url'] = u\n    config['headers'] = h\nexcept Exception:\n    pass\n"
+    )
+
+
+def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0, key=None):
+    path, method = key or _find(api, tool)
+    if path is None:
+        raise ValueError(f"Tool API has no operation for {tool}")
+    op = api["paths"][path][method]
+    url = api["servers"][0]["url"].rstrip("/") + "/" + path.lstrip("/")
+    schema = _body_schema(op)
+    hints = (spec.get("tool_field_hints") or {}).get(tool, {})
+    named, call_vars = _call_vars(spec)
+
+    # The call variable a field or parameter takes: its own name, else one named like it (musteriNo, musteri_no).
+    def alias(name):
+        return name if name in call_vars else None if name in named else _alike(name, call_vars)
     # The customer key is whatever get_account needs from the call (customer_number, cif, ...), not only *_id or *_ref.
     keys = set()
     if tool == "verify_identity":
-        try:
-            _, get_op = operation(api, "get_account")
-            get_body = get_op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
-            keys = (set(get_body.get("properties", {})) | set(x.get("name") for x in get_op.get("parameters") or [] if isinstance(x, dict))) & call_vars
-        except ValueError:
-            keys = set()
-        keys -= set(str(q.get("field")) for q in (spec.get("identity") or {}).get("questions") or [] if isinstance(q, dict))
-    # Path parameters and call-variable query parameters go into the URL, where {{var}} is resolved like a body default.
-    path_item = api["paths"].get(_find(api, tool)[0]) or {}
-    for param in list(path_item.get("parameters") or []) + list(op.get("parameters") or []):
-        name = param.get("name") if isinstance(param, dict) else None
-        if not name:
-            continue
-        if param.get("in") == "path":
-            url = url.replace("{" + name + "}", "{{" + name + "}}")
-        elif param.get("in") == "query" and name in call_vars and "{{" + name + "}}" not in url:
-            url += ("&" if "?" in url else "?") + name + "={{" + name + "}}"
+        get_path, get_method = _find(api, "get_account")
+        if get_path is not None:
+            get_op = api["paths"][get_path][get_method]
+            keys = {alias(n) for n in set(_body_schema(get_op).get("properties") or {}) | set(n for _, n in _params(api, get_path, get_op))}
+        asked = set(str(q.get("field")) for q in (spec.get("identity") or {}).get("questions") or [] if isinstance(q, dict))
+        keys -= asked | {alias(f) for f in asked} | {None}
     reserved = RESERVED | named
-    body = {}
-    for field, prop in schema.get("properties", {}).items():
+    props = schema.get("properties") or {}
+    body, headers, moved, required = {}, {"Content-Type": {"type": "string", "default": "application/json"}}, [], []
+    # A path or query parameter a call variable of its name fills goes into the URL as {{var}}, resolved like a body
+    # default. Any other is a body field the model fills (an engine-run call takes a variable instead), which the
+    # pre-hook moves into the URL path, the query or the headers.
+    for (where, name), param in _params(api, path, op).items():
+        pschema = param.get("schema") if isinstance(param.get("schema"), dict) else {}
+        if where == "header" and AUTH_HEADER.search(name):
+            continue
+        alike = None if name in named else _alike(name, call_vars)
+        if (name in named if where == "path" else name in call_vars):
+            if where == "path":
+                url = url.replace("{" + name + "}", "{{" + name + "}}")
+            elif where == "query":
+                url += ("&" if "?" in url else "?") + name + "={{" + name + "}}"
+            else:
+                headers[name] = {"type": "string", "default": "{{" + name + "}}"}
+        elif alike:
+            # The prepare node copies the variable to the parameter's name (compile_workflow); the pre-hook fills it too.
+            if where == "path" and re.fullmatch(r"\w+", name):
+                url = url.replace("{" + name + "}", "{{" + name + "}}")
+            moved.append([where, name, alike, True])
+        elif "const" in pschema or len(pschema.get("enum") or []) == 1 or (where == "header" and "default" in pschema):
+            value = pschema["const"] if "const" in pschema else pschema["enum"][0] if len(pschema.get("enum") or []) == 1 else pschema["default"]
+            if where == "header":
+                headers[name] = {"type": "string", "default": str(value)}
+            elif where == "query":
+                url += ("&" if "?" in url else "?") + urllib.parse.urlencode([(name, str(value))])
+            else:
+                moved.append([where, name, None, name in props])
+                body.setdefault(name, {"type": pschema.get("type", "string"), "default": value})
+        elif model_filled:
+            leaf = dict(pschema, description=" ".join(t for t in (param.get("description"), pschema.get("description")) if t))
+            body.setdefault(name, _leaf(leaf, "{{" + (f"{tool}_{name}" if name in reserved else name) + "}}", hints.get(name)))
+            moved.append([where, name, None, name in props])
+            if where == "path" or param.get("required"):
+                required.append(name)
+        elif where == "path" or param.get("required"):
+            source = _engine_source(api, name, call_vars)
+            if source is None and where == "path":
+                url = url.replace("{" + name + "}", "{{" + name + "}}")
+            elif source is not None:
+                moved.append([where, name, source, True])
+    baked = set()
+    for field, prop in props.items():
+        prop = prop if isinstance(prop, dict) else {}
+        source = alias(field)
         # In the identity check only identifiers are baked; anything else there is the caller's answer.
-        identifier = field == "id" or field.endswith(("_id", "_ref")) or field == "customer_id" or field in keys
-        if field in call_vars and (tool != "verify_identity" or identifier):
-            # Call identifiers such as customer_id are baked from the call variable of the same name.
-            body[field] = {"type": prop.get("type", "string"), "default": "{{" + field + "}}"}
+        identifier = any(n == "id" or n.endswith(("_id", "_ref")) for n in (field, source or "")) or field in keys or source in keys
+        if source and (tool != "verify_identity" or identifier):
+            # Call identifiers such as customer_id are baked from the call variable of the same name, or of a name like it.
+            body[field] = {"type": prop.get("type", "string"), "default": "{{" + source + "}}"}
+            baked.add(field)
         elif "const" in prop or len(prop.get("enum") or []) == 1 or (not model_filled and "default" in prop):
             # A fixed value from the API (a const, a one-value enum, or the default of a field no model fills) is sent as it is.
             value = prop["const"] if "const" in prop else prop["enum"][0] if len(prop.get("enum") or []) == 1 else prop["default"]
@@ -316,40 +502,63 @@ def api_tool(api, tool, spec, description="", model_filled=True, max_retries=0):
             # A placeholder with no variable behind it leaves the field to the model (verified pattern).
             name = f"{tool}_{field}" if field in reserved else field
             body[field] = _leaf(prop, "{{" + name + "}}", hints.get(field))
-        elif field in schema.get("required", []):
-            # A code-run tool has no model to fill a required field; take the variable of the same name.
-            body[field] = {"type": prop.get("type", "string"), "default": "{{" + field + "}}"}
+        elif field in (schema.get("required") or []):
+            # A code-run tool has no model to fill a required field; take the variable of the same name, or the one the
+            # identity check gave.
+            body[field] = {"type": prop.get("type", "string"), "default": "{{" + (_engine_source(api, field, call_vars) or field) + "}}"}
     function = {
         "name": tool,
         "handler": "__function__:api_call",
         "description": description or op.get("summary") or tool,
         "parameters": {"type": "object", "properties": {
             "url": {"type": "string", "default": url},
-            "method": {"type": "string", "default": _method(api, tool).upper()},
+            "method": {"type": "string", "default": method.upper()},
             "connect_retries": {"type": "number", "default": 0 if max_retries == 0 else 2},
-            "headers": {"type": "object", "properties": {"Content-Type": {"type": "string", "default": "application/json"}}},
-            "body": {"type": "object", "properties": body, "required": [f for f in schema.get("required", []) if f not in call_vars]},
+            "headers": {"type": "object", "properties": headers},
+            "body": {"type": "object", "properties": body,
+                     "required": [f for f in schema.get("required") or [] if f not in call_vars | baked] + [f for f in required if f not in props]},
         }},
     }
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
     tool_obj = {"type": "function", "config": {"timeoutMs": 12000, "maxRetries": max_retries}, "function": function,
                 "post_process_code": _post_hook(tool, flag, identity.get("answer_flag"), identity.get("complete_value"), identity.get("answer_value"),
-                                               identity.get("max_wrong_answers"))}
+                                               identity.get("max_wrong_answers"), tool == "verify_identity" and not _per_answer(spec, props))}
+    hook = _param_hook(moved) if moved else ""
     if tool == "close_call":
+        # The outcome is the request's enum property; the reason is the one free-text field beside it.
+        outcome = _enum_prop(props, "outcome") or "outcome"
+        free = [f for f, v in props.items() if f != outcome and f not in call_vars | baked and isinstance(v, dict) and v.get("type", "string") == "string"
+                and not v.get("enum") and not (f == "id" or f.endswith(("_id", "_ref")))]
+        reason = "reason" if "reason" in props else free[0] if len(free) == 1 else None
         # A reason the API requires is kept for every outcome; only an empty value or a placeholder is removed then.
-        silent = [] if "reason" in schema.get("required", []) else [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
+        silent = [] if reason in (schema.get("required") or []) else [o for o in (spec.get("outcomes") or {}).get("no_reason", []) if isinstance(o, str)]
         # The model often sends its last add_note or create_promise in the same turn as close_call, and the
         # platform runs them concurrently: a close that lands first makes them fail. The goodbye is already said.
-        tool_obj["pre_process_code"] = (
+        hook += (
             "try:\n    import datetime\n    end = datetime.datetime.now() + datetime.timedelta(seconds=1.5)\n"
-            "    while datetime.datetime.now() < end:\n        pass\nexcept Exception:\n    pass\n"
-            "try:\n    b = config.get('body')\n    if isinstance(b, dict):\n"
-            "        r = str(b.get('reason') or '').strip()\n"
-            f"        if b.get('outcome') in {json.dumps(silent)} or not r or r.startswith(chr(123)):\n"
-            "            b.pop('reason', None)\nexcept Exception:\n    pass\n"
-        )
+            "    while datetime.datetime.now() < end:\n        pass\nexcept Exception:\n    pass\n")
+        if reason:
+            hook += (
+                "try:\n    b = config.get('body')\n    if isinstance(b, dict):\n"
+                f"        r = str(b.get({reason!r}) or '').strip()\n"
+                f"        if b.get({outcome!r}) in {json.dumps(silent)} or not r or r.startswith(chr(123)):\n"
+                f"            b.pop({reason!r}, None)\nexcept Exception:\n    pass\n")
+    if hook:
+        tool_obj["pre_process_code"] = hook
     return tool_obj
+
+
+def _copy_code(spec, tools):
+    """Code for the first node: each call variable a tool URL's {{placeholder}} is named like (musteri_no for musteriNo) is
+    copied to the placeholder's name before any tool runs. Empty when no URL needs one."""
+    named, call_vars = _call_vars(spec)
+    urls = [str(t["function"]["parameters"]["properties"]["url"]["default"]) for t in tools]
+    pairs = sorted({(n, _alike(n, call_vars)) for u in urls for n in re.findall(r"\{\{(\w+)\}\}", u) if n not in named and _alike(n, call_vars)})
+    if not pairs:
+        return ""
+    return ("import json\ntry:\n    for _to, _from in json.loads(" + _py_literal(json.dumps(pairs)) + "):\n"
+            "        if str(vars.get(_from) or '').strip():\n            vars[_to] = vars[_from]\nexcept Exception:\n    pass\n")
 
 
 def _true(variable, value=None):
@@ -366,6 +575,48 @@ def _closed_transition(target="hang_up"):
             [{"variable": "close_call_success_count", "operator": "greater_than", "operand": 0}]}}
 
 
+def _model_transition(target, description):
+    """A transition the dialogue model takes by calling transition_to_<target> (workflow-format.md, tool-call transitions)."""
+    return {"target_node": target, "description": description, "is_tool_call": True,
+            "condition": {"operator": "matches_intent", "description": description}}
+
+
+def _end_transition(have):
+    return _closed_transition() if "close_call" in have else _model_transition("hang_up", END_CALL)
+
+
+def _english(spec):
+    return str(spec.get("language") or "English").strip().lower().startswith("en")
+
+
+# Seen in a Turkish rehearsal: told to say the FRAME's quoted sentences in Turkish, the agent still said "Go on." in English,
+# and the opening said a customer record's "Mr" as is. For a language listed here the sentences are written in it, and an
+# English honorific in the record is said its way. Other languages keep the instruction to translate.
+SPOKEN = {
+    "Turkish": {
+        "phrases": {"Go on.": "Devam edin lütfen.",
+                    "Sorry, I missed that, could you say it again?": "Kusura bakmayın, anlayamadım; tekrar söyler misiniz?",
+                    "That is the amount I mentioned.": "Bu, az önce söylediğim tutar.",
+                    '"nineteen ninety" is 1990 and "twenty one" is 21': '"bin dokuz yüz doksan" is 1990 and "yirmi bir" is 21'},
+        "titles": {"mr": "Bay", "mrs": "Bayan", "ms": "Bayan", "miss": "Bayan"},
+    },
+}
+
+
+def _spoken(language):
+    return SPOKEN.get(language) or {}
+
+
+def _title_code(language):
+    """Code for the first node: an English honorific in the record ('Mr') becomes the language's word ('Bay') before the
+    opening says it. Empty when the language has no list."""
+    titles = _spoken(language).get("titles")
+    if not titles:
+        return ""
+    return ("import json\ntry:\n    _said = json.loads(" + _py_literal(json.dumps(titles)) + ").get(str(vars.get('title') or '').strip().strip('.').lower())\n"
+            "    if _said:\n        vars['title'] = _said\nexcept Exception:\n    pass\n")
+
+
 def compile_workflow(spec, api, briefs):
     from .spec import normalize_spec, resolve_refs, who_variables
     api = resolve_refs(api)
@@ -374,46 +625,87 @@ def compile_workflow(spec, api, briefs):
     identity = spec.get("identity") or {}
     flag = identity.get("complete_flag") or "all_verified"
     raw = "\n\n".join(f"--- {d['path']} ---\n{d['text']}" for d in briefs)
+    # A role the bank has no operation for has no tool, and no sentence tells the agent to use one.
+    have = {t for t in TOOL_NAMES if _find(api, t)[0] is not None}
+    language = str(spec.get("language") or "English")
+    frame, go_on = FRAME, "Go on."
+    if not _english(spec):
+        for said, own in _spoken(language).get("phrases", {}).items():
+            frame = frame.replace(said, own)
+        go_on = _spoken(language).get("phrases", {}).get(go_on, go_on)
     system_prompt = "\n\n".join(filter(None, [
-        FRAME,
-        "Language: " + str(spec.get("language") or "English") + ".",
+        frame,
+        "Language: " + language + "." + ("" if _english(spec) else
+            f" Say everything in {language}. The quoted example sentences above (such as \"{go_on}\") show only what to say: say"
+            f" them in {language}. Say dates in words as a {language} speaker does (day, month and weekday), and numbers the"
+            f" customer says in {language} words, such as a year, are complete as said."),
         "BANK POLICY (verbatim documents, in the order given):\n" + raw,
         ("PRECEDENCE AND CLARIFICATIONS:\n" + policy["precedence"]) if policy.get("precedence") else "",
-        CLOSE_RULE,
+        CLOSE_RULE if "close_call" in have else CLOSE_RULE_NO_TOOL,
+        "\n".join(line for tool, line in NO_TOOL.items() if tool not in have),
         ("CLOSING TABLE:\n" + policy["closing"]) if policy.get("closing") else "",
     ]))
     facts_code = ("SPEC_JSON = " + _py_literal(json.dumps(code_spec(spec), ensure_ascii=True, separators=(",", ":"))) + "\n"
                   + compact_code((SNIPPETS / "facts.py").read_text()))
 
-    def code_node(name, target, before=()):
+    def code_node(name, target, before=(), code=None):
         return {"name": name, "node_type": "code", "passthrough": True, "passthrough_default_transition": target,
                 "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True,
                 "pre_actions": [{"type": "function", "function": {"name": "code_exec", "handler": "__function__:code_exec",
-                                 "parameters": {"type": "object", "properties": {"code": {"type": "string", "default": facts_code},
+                                 "parameters": {"type": "object", "properties": {"code": {"type": "string", "default": code or facts_code},
                                                                                  "timeout_ms": {"type": "number", "default": 10000}}}}}],
                 "transitions": list(before) + [{"target_node": target, "description": "always", "condition": {"operator": "always"}}]}
 
-    questions = "\n".join(f"- {q.get('field')}: {q.get('ask')} (send as: {q.get('answer_format')})" for q in identity.get("questions", []))
+    asked = (_body_schema(operation(api, "verify_identity")[1]).get("properties") or {}) if "verify_identity" in have else {}
+    per_answer = "verify_identity" in have and _per_answer(spec, asked)
+    # All the answers at once: each question is listed under the request's own field for it (dogumTarihi for dogum_tarihi).
+    questions = "\n".join(f"- {(not per_answer and _alike(q.get('field'), asked)) or q.get('field')}: {q.get('ask')} (send as: {q.get('answer_format')})"
+                          for q in identity.get("questions", []))
     # Seen live: with no value of its own in the prompt, the agent asked every customer for the brief's example name.
     # Only who the call is for: an amount or a security answer passed as a call variable must not be in reach before
     # identity is verified.
     this_call = who_variables(spec)
+    # Without an account read the agent goes from identity straight to the facts code; without an identity check the
+    # model itself says when the policy's identity check is done.
+    verified = "load_account" if "get_account" in have else "account_facts"
+    if "verify_identity" not in have:
+        # The model is the check: the call's own record of an answer (a call variable named like the question's field) is its key.
+        record = [(q.get("field"), _alike(q.get("field"), _call_vars(spec)[0] - {spec.get("now_variable")}))
+                  for q in identity.get("questions") or [] if isinstance(q, dict)]
+        check = "\n\n".join(filter(None, [
+            ("THE BANK'S RECORD of the answers (compare each answer with it as the policy says; never say, read out or hint these"
+             " values):\n" + "\n".join(f"- {f}: {{{{{v}}}}}" for f, v in record if v)) if any(v for _, v in record) else "",
+            f"This bank has no identity-check tool. Ask the identity questions the policy gives, one at a time, and judge the"
+            f" answers as the policy says. Once the policy's identity check is passed, call transition_to_{verified} in the"
+            " same message as your next words; never call it before."]))
+    elif per_answer:
+        check = ("Call verify_identity once for each answer the customer gives, with the field of the question you asked. An answer that"
+                 " comes together with a question or a complaint (a date followed by \"so how much do I owe?\") is still an answer: verify it"
+                 " first, then reply.")
+    else:
+        check = ("Ask every security question first, one at a time, then call verify_identity once with all the answers, each in its"
+                 " own field. An answer that comes together with a question or a complaint (a date followed by \"so how much do I"
+                 " owe?\") is still an answer: keep it and go on.")
     identify_task = "\n\n".join(filter(None, [
         "PHASE: before identity verification. The account is not visible yet and must not be discussed.",
         ("THIS CALL (who this call is for; names in the policy documents are only examples):\n"
          + "\n".join(f"- {v}: {{{{{v}}}}}" for v in this_call)) if this_call else "",
         policy.get("before_verification"),
-        "Security questions, in order (verify_identity field value: question):\n" + questions if questions else "",
-        "Call verify_identity once for each answer the customer gives, with the field of the question you asked. An answer that"
-        " comes together with a question or a complaint (a date followed by \"so how much do I owe?\") is still an answer: verify it"
-        " first, then reply.",
+        ("Security questions, in order (verify_identity field value: question):\n" if per_answer else
+         "Security questions, in order (verify_identity field: question):\n" if "verify_identity" in have else
+         "Security questions, in order:\n") + questions if questions else "",
+        check,
         "DATE FACTS:\n{{date_facts}}",
     ]))
+    # Without an account read the call's own values are all the agent has; identity is verified by now.
+    values = [v for v in spec.get("call_variables") or [] if v != spec.get("now_variable")]
     negotiate_task = "\n\n".join(filter(None, [
-        "PHASE: identity is verified. The get_account result is in ACCOUNT FACTS.",
+        "PHASE: identity is verified. The get_account result is in ACCOUNT FACTS." if "get_account" in have else
+        "PHASE: identity is verified. This bank has no account lookup: the account is what THIS CALL and the policy say.",
+        ("THIS CALL:\n" + "\n".join(f"- {v}: {{{{{v}}}}}" for v in values)) if "get_account" not in have and values else "",
         BRIEF_THINKING if NEGOTIATE_REASONING == "enabled" else "",
         policy.get("after_verification"),
-        "ACCOUNT FACTS:\n{{account_facts}}",
+        "ACCOUNT FACTS:\n{{account_facts}}" if "get_account" in have else "",
         "PROPOSAL COUNT:\n{{plan_state}}" if COUNT_CHECK else "",
         "NAMED DAY CHECK:\n{{named_day_facts}}" if DATE_CHECK else "",
         "DATE FACTS:\n{{date_facts}}",
@@ -422,32 +714,40 @@ def compile_workflow(spec, api, briefs):
         "NEXT STEP (from the PROPOSAL COUNT; the policy's own exceptions, such as hardship, come first):\n{{next_step}}" if COUNT_CHECK else "",
     ]))
     # Once no product has a proposal left, the persuasion plans are out of sight: seen live, the model kept offering floors.
+    promise = "create_promise" in have
     wrap_up_task = "\n\n".join(filter(None, [
         "PHASE: the payment proposals are finished. For a product marked DONE propose no amount and no date. Finish the call in"
-        " this order: read back what the customer offered and ask them to confirm it as the policy says; after a clear yes call"
-        " create_promise for that product; for each product without a promise do what the policy prescribes for it (when the policy"
-        " asks for a note, call add_note once for that product with the reason the policy gives), except a product whose line below"
-        " says it is already done;"
-        " say what the policy requires after a recorded promise; then say the closing words and call close_call.",
+        " this order: read back what the customer offered and ask them to confirm it as the policy says; after a clear yes"
+        + (" call create_promise for that product;" if promise else " the promise is agreed;")
+        + " for each product without a promise do what the policy prescribes for it"
+        + (" (when the policy asks for a note, call add_note once for that product with the reason the policy gives)" if "add_note" in have else "")
+        + ", except a product whose line below says it is already done;"
+        " say what the policy requires after a " + ("recorded " if promise else "") + "promise; then say the closing words and "
+        + ("call close_call." if "close_call" in have else "end the call."),
         "NAMED DAY CHECK:\n{{named_day_facts}}",
         "DATE FACTS:\n{{date_facts}}",
         # Last, so the next step is the most recent text the model reads.
         "PRODUCTS AND NEXT STEP:\n{{wrap_up_facts}}",
     ]))
     descriptions = spec.get("tool_descriptions") or {}
-    pre_tools = [t for t in ("verify_identity", "schedule_callback", "transfer_to_agent", "close_call")]
-    post_tools = [t for t in ("create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call")]
-    _, get_op = operation(api, "get_account")
-    # One retry: "if it fails, try once more" is the usual rule, and a third call would show in the bank's record.
-    get_account = api_tool(api, "get_account", spec, model_filled=False, max_retries=1)
-    get_account.pop("post_process_code")
-    list_field = (spec.get("account") or {}).get("list_field") or "products"
+    pre_tools = [t for t in ("verify_identity", "schedule_callback", "transfer_to_agent", "close_call") if t in have]
+    post_tools = [t for t in ("create_promise", "add_note", "schedule_callback", "transfer_to_agent", "close_call") if t in have]
+    # The contract's other operations (an SMS, a payment link, a statement copy) are tools of the negotiation.
+    extras = [api_tool(api, name, spec, descriptions.get(name, ""), key=key) for name, key in extra_tools(api).items()]
+    get_account = None
+    if "get_account" in have:
+        # One retry: "if it fails, try once more" is the usual rule, and a third call would show in the bank's record.
+        get_account = api_tool(api, "get_account", spec, model_filled=False, max_retries=1)
+        get_account.pop("post_process_code")
+    # An empty list_field: the account read returns the one product (a statement) or the array itself.
+    list_field = (spec.get("account") or {}).get("list_field")
+    list_field = "products" if list_field is None else str(list_field).strip(".")
 
     negotiate_node = {
         "name": "negotiate", "node_type": "conversation",
         "on_enter": {"type": "llm"}, "on_enter_first_entry_only": True,
         "task_message": negotiate_task,
-        "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools],
+        "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in post_tools] + extras,
         "max_node_turns": 120, "max_turn_transition": "hang_up",
         # A date-typed extraction resolves "tomorrow" against the server clock, not the call's date (seen live),
         # so the customer's own words are copied and resolved in code from the call's date.
@@ -517,7 +817,7 @@ def compile_workflow(spec, api, briefs):
            if DATE_CHECK else {}),
         # Multi-rule date, amount and per-product attempt decisions happen here.
         "reasoning_override": NEGOTIATE_REASONING,
-        "transitions": [_closed_transition()] + ([{
+        "transitions": [_end_transition(have)] + ([{
             "target_node": "check_date", "description": "the customer named a day or refused a product",
             "condition": {"logic": "or", "conditions": [{"logic": "and", "conditions": [
                 {"variable": v, "operator": "is_set"},
@@ -535,26 +835,30 @@ def compile_workflow(spec, api, briefs):
                     {"variable": "product_count", "operator": "not_equals", "operand": "1"}]}] if COUNT_CHECK else [])}}] if DATE_CHECK else []),
     }
 
+    identify_tools = [api_tool(api, t, spec, descriptions.get(t, "")) for t in pre_tools]
+    copy = _copy_code(spec, identify_tools + negotiate_node["tools"] + ([get_account] if get_account else []))
+    title = "" if _english(spec) else _title_code(language)
     nodes = {
-        "prepare": code_node("prepare", "identify"),
+        "prepare": code_node("prepare", "identify", code=(title + copy + facts_code) if (title or copy) else None),
         "identify": {
             "name": "identify", "node_type": "conversation",
             "on_enter": {"type": "tts", "text": spec.get("opening_line") or "Hello."}, "on_enter_first_entry_only": True,
             "task_message": identify_task,
-            "tools": [api_tool(api, t, spec, descriptions.get(t, "")) for t in pre_tools],
+            "tools": identify_tools,
             "max_node_turns": 80, "max_turn_transition": "hang_up",
             "transitions": [
-                {"target_node": "load_account", "description": "identity fully verified", "condition": {"logic": "or", "conditions": _true(f"verify_identity_response.data.{flag}", (spec.get("identity") or {}).get("complete_value"))}},
-                _closed_transition(),
+                {"target_node": verified, "description": "identity fully verified", "condition": {"logic": "or", "conditions": _true(f"verify_identity_response.data.{flag}", (spec.get("identity") or {}).get("complete_value"))}}
+                if "verify_identity" in have else _model_transition(verified, "The identity check the policy requires is passed."),
+                _end_transition(have),
             ],
         },
-        "load_account": {
+        **({"load_account": {
             "name": "load_account", "node_type": "api_request", "passthrough": True, "passthrough_default_transition": "account_facts",
             "on_enter": {"type": "silent"}, "disable_inactivity_monitor": True, "suppress_tool_results": False,
             "pre_actions": [get_account],
-            "response_mapping": [{"path": f"data.{list_field}", "variable": "account_products"}],
+            "response_mapping": [{"path": f"data.{list_field}" if list_field else "data", "variable": "account_products"}],
             "transitions": [{"target_node": "account_facts", "description": "always", "condition": {"operator": "always"}}],
-        },
+        }} if get_account else {}),
         "account_facts": code_node("account_facts", "negotiate"),
         "negotiate": negotiate_node,
         **({"check_date": code_node("check_date", "negotiate", [] if not COUNT_CHECK else [{
