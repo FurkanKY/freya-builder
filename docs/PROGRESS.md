@@ -364,3 +364,11 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - Düşük güvenli çıkarımlar: 105 sohbet çağrısında platform 14 değeri 0.44–0.59 güvenle attı; 14'ü de doğruydu. Aralarında PUB-12'nin "personal loan and car loan" reddi (0.48) ve PUB-11'in "this Friday"i (0.56–0.59) var.
   - b90f3e6 ile derlenen public-b sürüm 27'de PUB-11 3 koşunun 2'sinde düştü: "this Friday" iki koşuda da 0.59 ile atıldı. Model bir koşuda cumayı 17 Ekim sandı (cumartesi), ikisinde de günü sorup ayrıca geri okudu (iki onay).
   - Düzeltme (106d0e5): gün, ret, teklif, tarihli ürün ve tutar alanlarının eşiği 0.35; evet/hayır alanı `asked_back` 0.6'da kaldı.
+- 106d0e5, public-b sürüm 28 ve public-a sürüm 5, B, varyantlar ve A × 3 (Pazar 06:50–07:39). Pazar 07:3x'te CLI'ın 5 saatlik sınırı yine doldu ("resets 11:10am"). Sınırdan sonra persona boş döndü (müşteri "Sorry?" dedi, ajan "unclear" ile kapattı), yargıç karar vermedi. Bu koşular geçersiz. Sınırdan önce bitenler:
+  - A: 22/22. PUB-07, yani tatil vakası, 2/2.
+  - B: 8/8 (PUB-11 3/3, PUB-13 3/3, PUB-12 2/2).
+  - Varyantlar: 6/7. Kayıp PUB-13-v1 r2: müşteri 900'ü reddederken "ne ödeyebilirim?" diye sordu. Ajan kural 26'yı uyguladı ("full amount is too much" → floor, once; rest stays overdue), sonra 2. denemede tabanı son tarihte önerdi. Kontrol metni bu ara teklifi hesaba katmıyordu; ajan hatası değil. İki teklif artık tek mesajda yapılmıyor.
+  - INFRA sayılan üç ilk denemede müşteri satırı iki kez işlendi (platform hatasından sonra yeniden gönderim); INFRA doğru.
+- `scripts/chat_cases.py` (0e150e4): CLI sınır mesajı görülünce yeni koşu başlatılmıyor ve yeniden deneme yapılmıyor. Müşteri satırı ya da yargıç kararı gelmeyen koşu INFRA sayılıyor. INFRA koşusunun dökümü ayrı dosyada kalıyor.
+- FINAL.md (a4db8bd): pencere ilk kullanımdan itibaren 5 saat. 11:10–16:10 penceresi ölçüm için. 16:10–19:50 arasında CLI hiç kullanılmıyor, böylece 19:50 kontrolü final için 00:50'ye kadar sürecek temiz bir pencere açıyor.
+- 424485c: "THIS CALL" bloğu yalnız ad benzeri değişkenleri ve açılışta ya da kimlik politikasında şablon olarak geçenleri gösteriyor. Çağrı değişkeni olarak gelen bir tutar kimlik doğrulamadan önce görünmüyor.
