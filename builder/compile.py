@@ -11,6 +11,7 @@ from pathlib import Path
 SNIPPETS = Path(__file__).resolve().parent / "snippets"
 
 # Variables that are set before or during a call; a body field with one of these names would be baked.
+LOOSE = 0.35
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
@@ -306,15 +307,17 @@ def compile_workflow(spec, api, briefs):
         "max_node_turns": 120, "max_turn_transition": "hang_up",
         # A date-typed extraction resolves "tomorrow" against the server clock, not the call's date (seen live),
         # so the customer's own words are copied and resolved in code from the call's date.
+        # The free-text fields take low-confidence values: in 105 chat calls, all 14 values the platform dropped for
+        # confidence 0.44-0.59 were right ("Monday the 26th" at 0.49), and a dropped day or refusal skipped the code check.
         **({"extraction_schema": [{
-            "name": "named_day_words", "type": "string", "min_confidence": 0.6,
+            "name": "named_day_words", "type": "string", "min_confidence": LOOSE,
             "description": "The customer's own words for the one exact day they name in their LAST message as a day to pay or as a day"
                            " they ask about, copied as said, for example 'Monday the 26th', 'the thirtieth', '26 October', 'next Friday',"
                            " 'tomorrow'. Empty when the last message names no exact day or only a vague period such as 'next week',"
                            " 'the week after next', 'end of the month' or 'when my salary comes'. Not a day the customer only says"
                            " they cannot pay on, such as 'today' in 'I can't pay today'."}] + ([{
             # Attempt counting across products is the step the phone model gets wrong most; code keeps the count.
-            "name": "refused_products", "type": "string", "min_confidence": 0.6,
+            "name": "refused_products", "type": "string", "min_confidence": LOOSE,
             "description": "The products the customer flatly refuses to pay in their LAST message, as an answer to a question asking"
                            " them to pay. Name each refused product with the assistant's own words for it, for example 'personal loan',"
                            " 'credit card', 'car loan and personal loan'. When the customer only says no, name the product or products"
@@ -324,19 +327,19 @@ def compile_workflow(spec, api, briefs):
                            " a date or an amount, only says the amount is too much, mentions illness, a death, job loss or other hardship,"
                            " says it is already paid or disputes it, asks a question, only chats, or is cut off."}, {
             # Only proposals the assistant made are counted: a repeated "none of them" must not use up the others' steps.
-            "name": "proposed_products", "type": "string", "min_confidence": 0.5,
+            "name": "proposed_products", "type": "string", "min_confidence": LOOSE,
             "description": "The products that the assistant's most recent payment question asked the customer to pay, named with the"
                            " assistant's own words for them, for example 'credit card' or 'personal loan and car loan'; 'all' when it asked"
                            " about paying all the products together. Skip later assistant messages that ask for no payment, such as a"
                            " reason, 'Go on.' or a request to say it again. 'none' when no payment has been asked yet."}, {
             # A refusal of the agent's answer to the customer's own day or amount is that product's answer to the first ask.
-            "name": "dated_products", "type": "string", "min_confidence": 0.5,
+            "name": "dated_products", "type": "string", "min_confidence": LOOSE,
             "description": "The products the customer says they can or will pay on a day, a date or with an amount they give in their LAST"
                            " message, named with the assistant's own words for them, for example 'credit card'; 'all' when the day or"
                            " amount is for all of them. 'none' when the last message names no day, date or amount to pay, or only"
                            " mentions or asks about a product, or says they cannot pay it."}, {
             # The closing read-back is a fixed line with the amount owed; an amount of the customer's own turns it off.
-            "name": "named_amount_words", "type": "string", "min_confidence": 0.5,
+            "name": "named_amount_words", "type": "string", "min_confidence": LOOSE,
             "description": "An amount of money the customer themselves says they can or will pay in their LAST message, copied as said,"
                            " for example '300', 'two hundred', 'half of it'. 'none' when the last message names no amount of their own:"
                            " it only accepts, refuses or repeats the assistant's amount, or names only a day."}, {
