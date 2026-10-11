@@ -372,3 +372,20 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
 - `scripts/chat_cases.py` (0e150e4): CLI sınır mesajı görülünce yeni koşu başlatılmıyor ve yeniden deneme yapılmıyor. Müşteri satırı ya da yargıç kararı gelmeyen koşu INFRA sayılıyor. INFRA koşusunun dökümü ayrı dosyada kalıyor.
 - FINAL.md (a4db8bd): pencere ilk kullanımdan itibaren 5 saat. 11:10–16:10 penceresi ölçüm için. 16:10–19:50 arasında CLI hiç kullanılmıyor, böylece 19:50 kontrolü final için 00:50'ye kadar sürecek temiz bir pencere açıyor.
 - 424485c: "THIS CALL" bloğu yalnız ad benzeri değişkenleri ve açılışta ya da kimlik politikasında şablon olarak geçenleri gösteriyor. Çağrı değişkeni olarak gelen bir tutar kimlik doğrulamadan önce görünmüyor.
+
+## Aşama 16 — Pazar 07:40–08:20: CLI sınırı sırasında yerel düzeltmeler
+- CLI'ın 5 saatlik penceresi 11:10'da açılıyor. Haftalık kullanım %48, sıfırlanma 16 Ekim. `claude -p "/usage"` kontrolü hiçbir şey harcamıyor (01d86b4). Bu arada yalnız çevrimdışı çalışıldı: testler, eski derlemelerin spec'leriyle prompt farkı ve facts.py'nin yerelde adım adım koşturulması.
+- cf4b6ce: kimlik aşaması, değişkenin adı ne olursa olsun aramanın kimin için olduğunu biliyor. 424485c'nin filtresi yalnız adında "name" ya da "title" geçen değişkenleri gösteriyordu; brief kişiyi `customer` ya da `given`/`family` diye adlandırsaydı ajan yine örnek ismi kullanacaktı. Şimdi saat, kimlikler, hesap verisi, güvenlik cevapları ve asistanın kendi adı dışındaki her değişken gösteriliyor.
+  - Kimlik aşamasının gördüğü politika metni yalnız bu değişkenleri dolduruyor. `<date>` gibi bir geri okuma yer tutucusu bir çağrı değişkeniyle doldurulmuyor.
+  - Güvenlik soruları ve açılış satırı `[var]` biçimini ve her büyük/küçük harf yazımını tanıyor.
+  - Açılışta kalan bilinmeyen bir yer tutucu spec sorunu sayılıyor; bu bir düzeltme okumasını tetikliyor.
+  - public-b, genx ve geny derlemelerinde prompt farkı yok.
+- 29952f1: gün söylemeyen kelimeler müşterinin kendi günü sayılmıyor. Eşik 0.35'e indikten sonra `named_day_words` "then" (0.95 ile görüldü) ya da "right now" olabiliyordu. Gün artık yalnız bir tarihe çözülüyorsa ya da belirsiz bir dönemse ("next month") sayılıyor; "now" ve "right now" bugün oluyor.
+- 63a837e: notu yazılmış ürün, sayacı ne olursa olsun bitmiş sayılıyor. Zorluk ya da itiraz notu çoğunlukla ilk ret sonrasında yazılıyor (sayaç 1). O durumda ürün sırada kalıyor, başka bir ürün STOP'a gelince NEXT STEP ona yeniden teklif yaptırıyordu.
+- 8524e1a: müşterinin kabul ettiği teklif "anlaşıldı" sayılıyor ve bir daha önerilmiyor. İncelemede görüldü: üç ürünlü bir aramada müşteri kartın 1. denemesini kabul etti, ama bunu kaydeden bir durum yoktu.
+  - Kart sırada kaldı ve bekleme metni onun "gününün" beklediğini söyledi. Kredi STOP'a gelince NEXT STEP karta yeniden teklif yaptırdı ve taşıt kredisini beklettirdi.
+  - Yeni çıkarım alanı `accepted_products` facts kodunu çalıştırıyor. Kabul edilen ürün denemesiyle birlikte `agreed_products`'a yazılıyor, yeni teklif almıyor ve sıradaki ürünün teklifi geliyor.
+  - Geri okumada kabul edilen teklif okunuyor; sabit satır tutarı değil, borcu okuduğu için atlanıyor. Sonradan gelen bir ret anlaşmayı geri alıyor.
+  - Ret alanında "yes, credit card" ve "didn't refuse anything" artık ret sayılmıyor.
+  - 68 test geçiyor. Üç derlemede prompt farkı yalnız yeni çıkarım alanı ve check_date geçişi.
+- 11:11'de çalışacak ölçüm zinciri (measure8.sh), HEAD'den public-b ve public-a'yı sırayla derleyecek. Ardından B × 2, varyantlar × 1 (yeni kart-kabul vakası dahil), A × 1 ve beş insan üslubunun her biri × 1 koşacak.
