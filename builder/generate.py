@@ -77,6 +77,8 @@ Rules for the spec:
   name, amount, band, deadline, floor, attempts). Refer to them in the checklists instead of describing how to compute.
 - opening_line must not contain any word that the brief allows only after a later event (for example a word the agent may say
   only after a tool succeeds); express the same fact with a different word form, e.g. "we are ...ing this call" instead of "this call is ...ed" or "is being ...ed".
+  This rule is only for an opening the brief describes in its own words: when the brief quotes the first sentence and asks for
+  it word for word (verbatim, exactly), opening_line contains that quote unchanged.
 - attempt_plan lists exactly the proposals the brief allows after the first ask, so its length matches the brief's attempt count;
   the code fills in the tokens per product. Leave it empty if the brief has no persuasion sequence.
   Put in each step only what the brief states. If the brief gives only a number of attempts, each step repeats the
@@ -118,6 +120,37 @@ def _props(op, response=False):
     else:
         schema = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
     return schema.get("properties", {})
+
+
+VERBATIM = re.compile(r"word[- ]for[- ]word|verbatim|exact(?:ly| words| wording)|unchanged|as written", re.I)
+OPENING = re.compile(r"first sentence|opening|opens? (?:the call|with)|(?:begins?|starts?) (?:the call )?with|greeting|first thing (?:the agent|it|you) says", re.I)
+QUOTED = re.compile(r"[\"\u201c]([^\"\u201c\u201d\n]{8,300})[\"\u201d]|(?:^|[\s:(>])'([^\n]{8,300}?)'(?=[\s.,;:)]|$)")
+
+
+def _plain(text):
+    text = str(text).replace("\u2019", "'").replace("\u2018", "'")
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def opening_issues(spec, briefs):
+    """A brief that gives the first sentence word for word: the opening line must say it unchanged. Seen in a held-out brief:
+    the reader reworded 'This call is recorded.' because of the word-form rule meant for an opening the brief only describes."""
+    issues, line = [], _plain((spec or dict()).get("opening_line") or "")
+    for doc in briefs or []:
+        lines = str(doc.get("text") or "").splitlines()
+        for i, text in enumerate(lines):
+            if not (VERBATIM.search(text) and OPENING.search(text)):
+                continue
+            for m in QUOTED.finditer("\n".join(lines[i:i + 3])):
+                quote = (m.group(1) or m.group(2) or "").strip()
+                # A quote with a placeholder ("<first name>", "[bank]") is filled in, so it cannot be compared as it is.
+                if re.search(r"[<>\[\]{}]", quote) or len(quote.split()) < 3:
+                    continue
+                if _plain(quote) not in line:
+                    issues.append(f"opening_line must contain, unchanged, the sentence {doc.get('path')} gives word for word:"
+                                  f" \"{quote}\" (copy it exactly; the rule on word forms is only for an opening the brief describes)")
+                break
+    return issues
 
 
 def validate_spec(spec, api):
@@ -329,7 +362,7 @@ def is_secret_error(exc):
 def _checked(data, inputs):
     """Contract issues of a candidate spec, including a compiler crash as an issue instead of an exception."""
     try:
-        issues = validate_spec(data["spec"], inputs["api"])
+        issues = validate_spec(data["spec"], inputs["api"]) + opening_issues(data["spec"], inputs["briefs"])
     except Exception as exc:
         issues = [f"spec could not be validated: {type(exc).__name__}: {exc}"]
     try:

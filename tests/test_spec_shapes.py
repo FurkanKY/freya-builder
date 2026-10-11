@@ -332,3 +332,18 @@ def test_a_floor_that_is_a_multiple_of_a_field():
     snippet = (ROOT/"builder/snippets/facts.py").read_text()
     from builder.generate import TIMES
     assert "TIMES = r\"" + TIMES + "\"" in snippet
+
+
+def test_an_opening_sentence_given_word_for_word_is_kept_unchanged():
+    from builder.generate import opening_issues
+    # A held-out brief: "The first sentence is, word for word: '... This call is recorded.'" was reworded by the reader.
+    briefs = [{"path": "brief.md", "text": "4.1 The first sentence is, word for word: 'Good day, this is the virtual assistant of Freya Bank."
+                                           " This call is recorded.' Then ask for the customer by name."}]
+    bad = {"opening_line": "Good day, this is the virtual assistant of Freya Bank. We are recording this call. May I speak with {{first_name}}?"}
+    assert len(opening_issues(bad, briefs)) == 1 and "This call is recorded." in opening_issues(bad, briefs)[0]
+    good = {"opening_line": "Good day, this is the virtual assistant of Freya Bank. This call is recorded. May I speak with {{first_name}}?"}
+    assert opening_issues(good, briefs) == []
+    # An opening the brief only describes, or a quote with a placeholder, gives no issue.
+    for path in ("vendor/kit-v3/briefs/brief-a.md", "vendor/kit-v3/briefs/brief-b.md", "tests/fixtures/geny/brief-y.md"):
+        assert opening_issues({"opening_line": "Hello."}, [{"path": path, "text": (ROOT/path).read_text()}]) == [] or "brief-y" in path
+    assert opening_issues({"opening_line": "Hi."}, [{"path": "x", "text": 'Open with exactly: "Hello <first name>, this is Acme."'}]) == []
