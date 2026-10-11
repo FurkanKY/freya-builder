@@ -488,12 +488,14 @@ def _count_refusals(plans, day_named=False, named_date=None, today_iso=None, rec
                     and (0 < k_of(pid) <= _total(plans[all_ids.index(pid)]) or (k_of(pid) == 0 and pid not in own))]
         accepted = [pid for pid in open_now[:1] if pid in accepted]
     accepted = [pid for pid in accepted if not done(pid)]
-    # A plain yes to attempt 1 of a product the first ask already covered is that attempt accepted, not a day of the customer's
-    # own. A yes that says the day back stays a day of their own, so the fixed read-back line still covers it.
+    # A yes to attempt 1 of a product the first ask already covered is that attempt accepted, also when it says the day back:
+    # seen in a review, attempt 1 can be the floor, and a day of the customer's own is read back at the amount owed.
     late_yes = [pid for pid in accepted if k_of(pid) == 0 and pid not in own and (not first_open or closed)
-                and not (asked and set(asked) == set(all_ids)) and not (named_date and pid in dated_now)]
+                and not (asked and set(asked) == set(all_ids))]
+    # A day named after a hardship note is still the customer's own (the policy records it); not after a dispute or a payment.
+    closed_note = lambda pid: bool(set(recorded.get(pid) or []) & set(["note:closed", "create_promise"]))
     for pid in dated_now:
-        if k_of(pid) == 0 and pid not in own and pid not in late_yes:
+        if k_of(pid) == 0 and pid not in own and pid not in late_yes and not closed_note(pid):
             own.append(pid)
     changed = []
     fresh = []
@@ -630,13 +632,18 @@ def _recorded(ids):
             pid = str(value).strip()
             if pid in ids and tool not in seen.get(pid, []):
                 seen.setdefault(pid, []).append(tool)
+            if pid in ids and "note" in tool and any(re.match(r"^\w*(disput|paid|fraud|not_?mine|wrong)\w*$", str(v).strip(), re.I)
+                                                    for v in values if len(str(v)) < 40):
+                # The note's reason closes the product for good: a day named after it is no promise.
+                if "note:closed" not in seen.get(pid, []):
+                    seen.setdefault(pid, []).append("note:closed")
     vars["recorded_calls"] = json.dumps(seen, sort_keys=True)
     return seen
 
 
 def _already(tools):
     """What a DONE product's line says about the tools already done for it; empty when none."""
-    tools = [t for t in tools or [] if t != "create_promise"]
+    tools = [t for t in tools or [] if t != "create_promise" and ":" not in t]
     if not tools:
         return ""
     return (" Already done for it in this call: " + ", ".join(tools) + " succeeded; do not call " + ", ".join(tools)

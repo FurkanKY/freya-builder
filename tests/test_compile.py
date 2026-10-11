@@ -519,18 +519,21 @@ def test_a_yes_to_attempt_1_after_the_first_ask_is_that_attempt_agreed():
     assert json.loads(out["agreed_products"]) == {"p2": 1} and json.loads(out["refusal_counts"])["p2"] == 1
     assert json.loads(out["own_offer_products"]) == []
     assert "NEXT STEP: your next message makes exactly this proposal and no other: p3 car loan: attempt 1:" in out["plan_state"]
-    # A yes that says the day back ("yes, Friday is fine") stays a day of the customer's own, so the fixed read-back line covers
-    # it; the next product's proposal follows all the same.
+    # A yes that says the day back ("yes, Friday is fine") is the same agreement: attempt 1 can be the floor, which a day of the
+    # customer's own would read back at the amount owed. A later refusal moves it to attempt 2, never attempt 1 again.
     back = run_facts(wf, dict(base, refused_products="credit card", proposed_products="all"))
     for _ in range(2):
         back = run_facts(wf, dict(back, refused_products="credit card", proposed_products="credit card"))
     back = run_facts(wf, dict(back, accepted_products="personal loan", proposed_products="personal loan", dated_products="personal loan",
                               named_day_words="Friday"))
-    assert json.loads(back["own_offer_products"]) == ["p2"] and json.loads(back["own_offer_days"]) == {"p2": "2026-10-16"}
-    assert json.loads(back["agreed_products"]) == {}
+    assert json.loads(back["agreed_products"]) == {"p2": 1} and json.loads(back["own_offer_days"]) == {"p2": "2026-10-16"}
+    assert json.loads(back["own_offer_products"]) == []
     assert "NEXT STEP: your next message makes exactly this proposal and no other: p3 car loan: attempt 1:" in back["plan_state"]
+    taken = run_facts(wf, dict(back, refused_products="personal loan", proposed_products="personal loan"))
+    assert json.loads(taken["refusal_counts"])["p2"] == 2 and json.loads(taken["agreed_products"]) == {}
     back = run_facts(wf, dict(back, refused_products="car loan", proposed_products="car loan"))
-    assert back["wrap_up_mode"] == "say" and "personal loan, 1320 on Friday, 16 October" in back["wrap_up_say"]
+    assert back["negotiation_done"] == "yes" and back["wrap_up_mode"] == "llm"
+    assert "normally attempt 1" in back["wrap_up_step"]
     # The first answer refused the card and the car loan and left the loan open: after the card's acceptance the loan comes
     # next, in bank order, not the car loan.
     out = run_facts(wf, dict(base, refused_products="credit card and car loan", proposed_products="all"))
@@ -573,6 +576,14 @@ def test_a_refused_own_day_is_not_the_day_of_a_later_acceptance():
     out = run_facts(wf, dict(base, recorded_calls=json.dumps({"p1": ["add_note"], "p2": ["add_note"], "p3": ["add_note"]}),
                              named_day_words="this Friday", dated_products="car loan"))
     assert json.loads(out["own_offer_products"]) == ["p3"]
+    # Not after a dispute note: "the car loan isn't mine; if it is, I'd pay it Monday" is no promise.
+    out = run_facts(wf, dict(base, refused_products="credit card and personal loan", proposed_products="all"))
+    out = run_facts(wf, dict(out, **{"add_note_args.product_id": "p3", "add_note_args.reason": "dispute", "add_note_response.data.ok": "true",
+                                     "refused_products": "credit card", "proposed_products": "credit card"}))
+    assert "note:closed" in json.loads(out["recorded_calls"])["p3"]
+    out = run_facts(wf, dict(out, named_day_words="Monday the 19th", dated_products="car loan"))
+    assert json.loads(out["own_offer_products"]) == []
+    assert "note:closed" not in out["plan_state"]
 
 
 def test_facts_read_products_flattened_under_the_node_name():
