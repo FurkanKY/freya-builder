@@ -197,9 +197,17 @@ def validate_spec(spec, api):
                 issues.append(f"spoken_name_by_type key {kind} is not a product type {kinds}")
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         issues.append(f"spec could not be checked against the tool API: {type(exc).__name__}: {exc}")
+    tokens = ("amount", "floor", "deadline", "next_business_day", "last_business_day_this_week", "last_business_day_next_week")
     for band in spec["account"].get("bands", []):
         if not isinstance(band.get("min"), (int, float)) or not isinstance(band.get("max"), (int, float)):
             issues.append(f"band {band.get('name')} needs numeric min and max")
+        # Seen in 3 of 6 reads of the public briefs: an invented token stays literal in the plan the agent must follow.
+        for step in band.get("attempt_plan") or []:
+            for token in re.findall(r"<\s*([A-Za-z_]+)\s*>", str(step)):
+                if token not in tokens:
+                    issues.append(f"band {band.get('name')} attempt_plan uses <{token}>, which the code cannot fill; use only"
+                                  " <" + "> <".join(tokens) + "> and say any other condition in words, e.g. 'if today is that"
+                                  " day, <last_business_day_next_week>'")
     for h in spec["calendar"].get("holidays", []):
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(h.get("date") if isinstance(h, dict) else h)):
             issues.append(f"holiday {h} is not YYYY-MM-DD")

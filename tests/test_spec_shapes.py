@@ -205,10 +205,12 @@ def test_last_working_day_of_the_month_is_a_business_day():
     assert scope["_deadline"](rule, today, set(range(5)), {}) == datetime.date(2026, 10, 30)
     assert scope["_deadline"](rule, today, set(range(6)), {}) == datetime.date(2026, 10, 31)
     assert scope["_deadline"](rule, today, set(range(5)), {"2026-10-30": "x"}) == datetime.date(2026, 10, 29)
-    assert scope["_deadline"]({"type": "end_of_month"}, today, set(range(5)), {}) == datetime.date(2026, 10, 31)
+    # The month's last calendar day is a Saturday: a promise date is a business day, so the deadline is the Friday before it.
+    assert scope["_deadline"]({"type": "end_of_month"}, today, set(range(5)), {}) == datetime.date(2026, 10, 30)
+    assert scope["_deadline"]({"type": "end_of_month"}, today, set(range(6)), {}) == datetime.date(2026, 10, 31)
     nov30 = datetime.date(2026, 11, 30)
     assert scope["_deadline"]({"type": "end_of_next_month"}, today, set(range(5)), {}) == nov30
-    assert scope["_deadline"]({"type": "end_of_next_month"}, datetime.date(2026, 12, 3), set(range(5)), {}) == datetime.date(2027, 1, 31)
+    assert scope["_deadline"]({"type": "end_of_next_month"}, datetime.date(2026, 12, 3), set(range(7)), {}) == datetime.date(2027, 1, 31)
     assert scope["_deadline"]({"type": "last_business_day_of_next_month"}, today, set(range(5)), {"2026-11-30": "x"}) == datetime.date(2026, 11, 27)
     # Wednesday 14 October: Friday 16th, then Friday 23rd; on Saturday 17th this week's last business day has passed.
     week = {"type": "last_business_day_this_week"}

@@ -949,3 +949,83 @@ def test_a_tool_call_already_done_is_not_asked_for_again():
     # Nested, as the engine might hand it over: read as well.
     nested = run_facts(wf, dict(base, add_note_args={"product_id": "p3"}, add_note_response={"data": {"ok": True}}))
     assert json.loads(nested["recorded_calls"]) == {"p3": ["add_note"]}
+
+
+def _three_products_spec(deadline=None):
+    spec = json.loads(json.dumps(SPEC))
+    step1 = "attempt 1: propose <last_business_day_this_week> for <amount>"
+    late = deadline or {"type": "business_days_after_today", "count": 7, "date": ""}
+    spec["account"]["bands"] = [
+        {"name": "early", "min": 1, "max": 10, "deadline": {"type": "business_days_after_today", "count": 5, "date": ""},
+         "persuasion_attempts": 1, "attempt_plan": [step1]},
+        {"name": "late", "min": 11, "max": 45, "deadline": late,
+         "persuasion_attempts": 2, "attempt_plan": [step1, "attempt 2: propose <floor> on <deadline>"]}]
+    products = [{"product_id": "p1", "type": "credit_card", "card_last4": "9015", "past_due": 510.0, "days_late": 16, "minimum_payment": 153.0},
+                {"product_id": "p2", "type": "personal_loan", "past_due": 1320.0, "days_late": 16, "instalment_amount": 440.0},
+                {"product_id": "p3", "type": "car_loan", "past_due": 140.0, "days_late": 7, "instalment_amount": 46.0}]
+    return spec, products
+
+
+def test_calls_on_other_calendar_days():
+    # The kit tests every agent "on several calendar days": a weekend call, a deadline on a closed day, and other clocks.
+    spec, products = _three_products_spec()
+    wf = compile_workflow(spec, API, BRIEFS)
+    # Saturday 17 October: this week's last business day (Friday 16th) has passed, so the plan proposes Friday 23rd.
+    out = run_facts(wf, {"now": "2026-10-17T11:00", "account_products": json.dumps(products)})
+    assert "has no business day left" in out["date_facts"] and "2026-10-16 (Friday" in out["date_facts"]
+    assert "attempt 1: propose 2026-10-23 (Friday, 23 October 2026) for 510" in out["account_facts"]
+    assert "2026-10-16" not in out["account_facts"]
+    # A month-end deadline on Saturday 31 October is Friday 30th; a calendar-day deadline on the holiday Monday 26th is the
+    # Friday before.
+    spec, products = _three_products_spec({"type": "end_of_month", "count": 0, "date": ""})
+    out = run_facts(compile_workflow(spec, API, BRIEFS), {"now": "2026-10-21T11:00", "account_products": json.dumps(products)})
+    assert "deadline 2026-10-30 (Friday, 30 October 2026)" in out["account_facts"] and "2026-10-31" not in out["account_facts"]
+    spec, products = _three_products_spec({"type": "calendar_days_after_today", "count": 10, "date": ""})
+    spec["calendar"]["holidays"] = [{"date": "2026-10-26", "name": "bank holiday"}]
+    out = run_facts(compile_workflow(spec, API, BRIEFS), {"now": "2026-10-16T11:00", "account_products": json.dumps(products)})
+    assert "deadline 2026-10-23 (Friday, 23 October 2026)" in out["account_facts"]
+    # The clock under another name than the spec's (a raw brief named none; the call passes 'now'), and other formats.
+    guessed = dict(spec, now_variable="today")
+    wf = compile_workflow(guessed, API, BRIEFS)
+    for raw in ("2026-10-21T09:00", "21-10-2026 09:00", "21 October 2026 09:00", "Wednesday, 21 October 2026, 09:00", "Oct 21, 2026",
+                "20261021T0900"):
+        out = run_facts(wf, {"now": raw, "account_products": json.dumps(products)})
+        assert out["date_facts"].startswith("Now: 2026-10-21"), raw
+    # A date of birth is never taken for the clock.
+    out = run_facts(wf, {"date_of_birth": "1988-03-14", "account_products": json.dumps(products)})
+    assert out["facts_state"] == "no_date"
+
+
+def test_a_day_of_next_month_is_in_next_month():
+    spec, products = _three_products_spec()
+    wf = compile_workflow(spec, API, BRIEFS)
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products[:1])}
+    for words, day in (("the 15th of next month", "2026-11-15"), ("next month on the 2nd", "2026-11-02"), ("the 20th of this month", "2026-10-20"),
+                       ("the 15th", "2026-10-15"), ("the 2nd", "2026-11-02")):
+        out = run_facts(wf, dict(base, named_day_words=words))
+        assert "resolved by code from today's date: " + day + " " in out["named_day_facts"], (words, out["named_day_facts"])
+
+
+def test_the_fixed_read_back_needs_a_known_deadline_and_the_full_amount():
+    spec, products = _three_products_spec({"type": "none", "count": 0, "date": ""})
+    wf = compile_workflow(spec, API, BRIEFS)
+    base = {"now": "2026-10-14T11:00", "account_products": json.dumps(products)}
+    out = run_facts(wf, dict(base, named_day_words="Friday", dated_products="credit card", refused_products="personal loan, car loan", proposed_products="all"))
+    for _ in range(2):
+        out = run_facts(wf, dict(out, refused_products="personal loan", proposed_products="personal loan"))
+    out = run_facts(wf, dict(out, refused_products="car loan", proposed_products="car loan"))
+    # The card's band has no computed deadline: the model reads back under the policy.
+    assert out["negotiation_done"] == "yes" and out["wrap_up_mode"] == "llm"
+    spec, products = _three_products_spec()
+    wf = compile_workflow(spec, API, BRIEFS)
+    for words, said in (("the minimum", True), ("one instalment", True), ("in full", False), ("the full amount", False), ("none", False)):
+        out = run_facts(wf, dict(base, named_amount_words=words))
+        assert (out.get("amount_named") == "yes") == said, words
+
+
+def test_an_invented_plan_token_is_a_contract_error():
+    spec, _ = _three_products_spec()
+    assert validate_spec(spec, API) == []
+    spec["account"]["bands"][0]["attempt_plan"] = ["attempt 1: propose <amount> by <last_business_day_this_week>, or <next_business_day_of_week> if today is that day"]
+    issues = validate_spec(spec, API)
+    assert len(issues) == 1 and "<next_business_day_of_week>" in issues[0]

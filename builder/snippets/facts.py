@@ -14,21 +14,52 @@ def _spec():
         return dict()
 
 
-def _today(spec):
-    """The call's clock: ISO (T or space, optional seconds, Z or offset), YYYY/MM/DD, or day-first DD/MM/YYYY or DD.MM.YYYY."""
-    raw = str(vars.get(spec.get("now_variable") or "now") or "").strip()
-    m = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ,]+(\d{1,2}):(\d{2}))?", raw)
+MONTH_NAMES = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+
+
+def _clock(raw):
+    """ISO (T or space, optional seconds, Z or offset), YYYY/MM/DD, compact YYYYMMDD[THHMM], day-first DD/MM/YYYY, DD.MM.YYYY or
+    DD-MM-YYYY, and '14 October 2026' or 'Oct 14, 2026' (optionally with a weekday and a time)."""
+    raw = str(raw or "").strip()
+    t = r"(?:[T ,]+(\d{1,2}):(\d{2}))?"
+    for pattern, order in ((r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})" + t, "ymd"), (r"(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})" + t, "dmy"),
+                           (r"\b(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2}))?\b", "ymd")):
+        m = re.search(pattern, raw)
+        if m:
+            parts = dict(zip(order, m.groups()[:3]))
+            try:
+                return datetime.datetime(int(parts["y"]), int(parts["m"]), int(parts["d"]), int(m.group(4) or 0), int(m.group(5) or 0))
+            except Exception:
+                return None
+    low = raw.lower()
+    names = "|".join(n[:3] + "[a-z]*" for n in MONTH_NAMES)
+    m = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(" + names + r")\.?,?\s+(\d{4})", low) or None
     if m:
-        y, mo, d, h, mi = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
+        d, mo, y = m.group(1), m.group(2), m.group(3)
     else:
-        m = re.search(r"(\d{1,2})[/.](\d{1,2})[/.](\d{4})(?:[T ,]+(\d{1,2}):(\d{2}))?", raw)
+        m = re.search(r"\b(" + names + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})", low)
         if not m:
             return None
-        d, mo, y, h, mi = m.group(1), m.group(2), m.group(3), m.group(4), m.group(5)
+        mo, d, y = m.group(1), m.group(2), m.group(3)
+    hm = re.search(r"\b(\d{1,2}):(\d{2})\b", low[m.end():])
     try:
-        return datetime.datetime(int(y), int(mo), int(d), int(h or 0), int(mi or 0))
+        return datetime.datetime(int(y), [n[:3] for n in MONTH_NAMES].index(mo[:3]) + 1, int(d),
+                                 int(hm.group(1)) if hm else 0, int(hm.group(2)) if hm else 0)
     except Exception:
         return None
+
+
+def _today(spec):
+    """The call's clock: the spec's clock variable, else 'now', else another call variable named like a clock that holds a
+    date (seen: a raw brief named no variables and the reader guessed 'today' while the call passed 'now')."""
+    names = [spec.get("now_variable") or "now", "now"]
+    names += sorted(k for k in vars.keys() if re.search(r"now|time|today|clock|date", str(k), re.I)
+                    and not re.search(r"birth|dob|due|promise|callback|_args|_response|deadline|day_words", str(k), re.I))
+    for name in names:
+        found = _clock(vars.get(name))
+        if found is not None:
+            return found
+    return None
 
 
 def _calendar(spec):
@@ -91,6 +122,17 @@ def _last_business_of_week(day, workdays, holidays):
 
 
 def _deadline(rule, today, workdays, holidays):
+    """The band's latest promise date. A calendar rule that lands on a weekend or holiday gives the last business day before
+    it (when that is not before today): a promise date is a business day, and the closed-day rule would offer one after it."""
+    day = _deadline_day(rule, today, workdays, holidays)
+    if day is not None and not _is_business(day, workdays, holidays):
+        earlier = _previous_business(day, workdays, holidays)
+        if earlier is not None and earlier >= today:
+            return earlier
+    return day
+
+
+def _deadline_day(rule, today, workdays, holidays):
     if not isinstance(rule, dict):
         return None
     kind = str(rule.get("type") or "")
@@ -311,6 +353,15 @@ def _resolve_day(words, today):
         if tok in MONTHS and (tok != "may" or _day_number(tokens[max(0, i - 3):i + 4])):
             month = MONTHS.index(tok) + 1
     day = _day_number(tokens)
+    if day and not month and (" next month " in joined or " this month " in joined):
+        y, mo = today.year, today.month
+        if " next month " in joined:
+            y, mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+        try:
+            d = datetime.date(y, mo, day)
+        except Exception:
+            return []
+        return [d] if d >= today else []
     if day:
         y, mo = today.year, month or today.month
         for _ in range(3):
@@ -876,7 +927,10 @@ def _amount_named(raw):
     raw = str(raw or "").strip().lower()
     if raw.strip(" .'\"") in ("", "none", "n/a", "null", "no", "nothing"):
         return False
-    return bool(re.search(r"\d", raw) or re.search(r"\b(" + "|".join(AMOUNT_WORDS) + r")\b", raw))
+    if re.search(r"\d", raw) or re.search(r"\b(" + "|".join(AMOUNT_WORDS) + r")\b", raw):
+        return True
+    # "the minimum", "one instalment", "a part of it": an amount other than the full one, which the fixed line would misread.
+    return not re.search(r"\b(full|all|everything|whole|entire|total|lot|owed|owe)\b", raw)
 
 
 def _confirm_question(spec):
@@ -919,9 +973,14 @@ def run():
     if nb:
         lines.append("Next business day after today: " + _label(nb) + ".")
     lb = _last_business_of_week(today, workdays, holidays)
-    if lb:
-        lines.append("Last business day of the current calendar week (Monday to Sunday): " + _label(lb) + ". Today " + ("IS" if lb == today else "is NOT") + " that day.")
     lbn = _last_business_of_week(today + datetime.timedelta(days=7), workdays, holidays)
+    if lb and lb < today:
+        # Seen in an audit: on a Saturday the plan proposed yesterday. The week's last business day is then next week's.
+        lines.append("The current calendar week (Monday to Sunday) has no business day left: its last one, " + _label(lb) + ", has"
+                     " passed. A proposal for the last business day of this week uses the next one: " + _label(lbn) + ". Today is NOT that day.")
+        lb = lbn
+    elif lb:
+        lines.append("Last business day of the current calendar week (Monday to Sunday): " + _label(lb) + ". Today " + ("IS" if lb == today else "is NOT") + " that day.")
     if lbn:
         lines.append("Last business day of the following calendar week: " + _label(lbn) + ".")
     week_start = today - datetime.timedelta(days=today.weekday())
@@ -1108,7 +1167,9 @@ def run():
         names = ", ".join(pid + " " + label for pid, label in ids)
         # The fixed line reads the amount owed; an accepted proposal (a floor, another day) is read back by the model.
         waiting = [pid for pid in agreed if pid in settled and "create_promise" not in (recorded.get(pid) or [])]
-        if ids and not waiting and all(day and amount for _, amount, day in items):
+        # A product whose deadline the code could not compute ("see policy") is read back by the model under the policy.
+        known = dict(open_deadlines)
+        if ids and not waiting and all(day and amount for _, amount, day in items) and all(known.get(pid) for pid, _ in ids):
             # Seen live: on the turn of the last refusal the model kept the pattern of its earlier proposals and made one more
             # for a finished product, whatever the step said. A fixed line has no pattern to follow. Only once per call, only
             # on a plain refusal turn, and never after the customer named an amount of their own (the line reads the amount owed).
