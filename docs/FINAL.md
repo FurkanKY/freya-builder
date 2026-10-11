@@ -18,6 +18,7 @@ Times are Istanbul time (UTC+3). Briefs open at 20:00, submissions close at 23:0
 3. Each build reads the brief three times in parallel and keeps the read that agrees most with the other two. The `spec_vote` line in the trace lists the fields where the reads differ (`fields_that_differ`). When a decision field differs (deadline, attempts, floor, outcome codes, calendar, identity), run one more build and compare the specs:
    `.venv/bin/python scripts/spec_diff.py <run_id> <run_id>`
    The three reads of one build are in `runs/<run_id>/read-<k>/spec.json` and can be compared the same way.
+   A `spec_still_invalid` line in the trace lists contract issues no fix read removed (for example an opening sentence the brief gives word for word that the spec does not say unchanged): read them, and run one more build when one names a decision field or the opening line.
    Read that part of the brief and submit the run whose spec matches it. The builder code is never edited with anything from the brief. Only a generic crash fix is allowed, for example a table shape the parser did not expect.
 4. Submit the chosen run: `.venv/bin/python -m builder.submit <run_id> final-<n>`. This copies `final.workflow.json` (the `export_workflow` file) and that run's trace into `submission/`.
 
