@@ -345,3 +345,14 @@ Claude SDK ve Freya read-only erişimini doğrula; minimum builder kritik testle
   - Sözü kaydedilmiş ürün, sayacı ne olursa olsun teklif almıyor ve kapanışta "söz kaydedildi" sayılıyor.
   - Soruyla kapanan ilk soru sonraki turlarda da kapalı kalıyor (`first_ask_closed`).
   - 65 test geçiyor.
+- 2583e08 ölçülmeden önce bir ek düzeltme (007dea1): kimlik cevabı bir soruyla birlikte gelse de ("21 Temmuz 1990, peki borcum ne kadar?") önce verify_identity çağrılıyor.
+
+## Aşama 15 — Pazar sabahı: 007dea1 ölçümü, ad şablonu hatası
+- Pazar 06:11'de CLI sınırı açıldı. Sabah zinciri iki derlemeyi paralel başlattı; builder aynı anda tek çalıştırmaya izin verdiği için ikincisi ("Another builder process is running") başlamadı. FINAL.md'ye "derlemeler sırayla" notu eklendi (ea947ca).
+- 007dea1, public-b sürüm 26 (A+B): B vakaları × 3 → PUB-11, PUB-12, PUB-13 her biri 3/3. PUB-12 ilk kez her tekrarda geçti.
+- Genelleme fixture'ları güncel kodla yeniden derlendi (genx 71/72/71, geny 63/66/65; ikisi de validated). facts.py, iki fixture'ın kendi alan adlarıyla yerelde adım adım koşturuldu:
+  - geny: son tarihler doğru (ay sonu son iş günü 31 Ekim cumartesi; 3 iş günü sonrası 17 Ekim), %20 kart tabanı 60, tek denemeden sonra STOP, "neden bugün?" soru adımı, sabit geri okuma satırı.
+  - genx: memo'nun 7 takvim günü kuralı (21 Ekim), kapalı gün (2 Kasım), iki denemeden sonra STOP. Geri okuma satırı politikanın tırnak içindeki sorusunu kullanıyor ("Is that correct?").
+- Hata: 007dea1 ile derlenen public-a (sürüm 3) A vakalarının çoğunda müşteriye "Mr Reyes" diye sordu. Reyes, brief A'daki örnek isim ve PUB-01'in müşterisi; bir koşuda da uydurma bir isim çıktı. Sonuç: 15 koşunun 9'u başarısız, çoğu "wrong_number".
+  - Sebep: ad sorusundaki şablonu derleyici değil, brief'i okuyan model politika metnine yazıyordu. Bu okumada model şablonu `{title} {last_name}` diye tek süslü parantezle yazdı; platform yalnız `{{...}}` biçimini dolduruyor. geny derlemesinde ise ad hiçbir yerde yoktu.
+  - Düzeltme (4bf21c7): kimlik görevi, spec'teki her çağrı değişkenini `- last_name: {{last_name}}` biçiminde bir "THIS CALL" bloğunda veriyor. Politika metnindeki `{ad}` ve `<ad>` yer tutucuları da çağrı değişkeni olduklarında `{{ad}}` oluyor. 66 test geçiyor.
