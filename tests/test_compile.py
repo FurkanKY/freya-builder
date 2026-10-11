@@ -331,8 +331,14 @@ def test_only_proposals_the_assistant_made_are_counted():
     out = run_facts(wf, dict(base, refused_products="credit card, personal loan", proposed_products="all of them"))
     assert json.loads(out["refusal_counts"]) == {"p1": 1, "p2": 1}
     assert ("p3 car loan: refused 0 times; nothing refused yet; the first ask already covered it, so do not ask it again for p3."
-            " Unless the customer gives a day or an amount for it, its next proposal is attempt 1: propose 2026-10-16") in out["plan_state"]
+            " Unless the customer gives a day or an amount for it, its next proposal, only after p1 is settled and never in the same"
+            " message as p1's, is attempt 1: propose 2026-10-16") in out["plan_state"]
     assert out["plan_state"].startswith("NEXT STEP: your next message makes exactly this proposal and no other: p1 credit card ending 9015: attempt 1:")
+    # Seen in a chat run: the NEXT STEP named the card and the loan's line its own next proposal; the model made both in
+    # one message. Every other product's next proposal waits for the named one.
+    assert ("p2 personal loan: refused 1 time -> next proposal for p2, only after p1 is settled and never in the same message as"
+            " p1's: attempt 1:") in out["plan_state"]
+    assert "p1 credit card ending 9015: refused 1 time -> next proposal for p1: attempt 1:" in out["plan_state"]
     assert "nothing refused yet." in run_facts(wf, dict(base))["plan_state"]
     # A group refusal after a message that proposed nothing ("Go on.", a reason) counts only for the product being worked on.
     start = dict(base, refusal_counts=json.dumps({"p1": 1, "p2": 1, "p3": 1}))

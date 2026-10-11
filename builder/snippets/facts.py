@@ -599,6 +599,9 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
     first_of = dict()
     now = []
     pending, unasked, stopped, offered = [], [], [], []
+    # Per product: the index of its line and the text naming its next proposal, so the product the NEXT STEP names
+    # can be kept apart from the others.
+    line_of, later = dict(), dict()
     first_done = bool(own) or question or first_closed or any(int(counts.get(pl[0]) or 0) for pl in plans)
     for pid, label, steps, allowed, _, floor in plans:
         k = int(counts.get(pid) or 0)
@@ -625,6 +628,7 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
                 text += ("; the first ask already covered it, so do not ask it again for " + pid + ". Unless the customer"
                          " gives a day or an amount for it, its next proposal is attempt 1: "
                          + (steps[0] if steps else "persuasion attempt 1 as the policy says"))
+                later[pid] = ("its next proposal is attempt 1:", "its next proposal, {}, is attempt 1:")
         elif total is not None and k > total:
             stopped.append(pid)
             text += " -> STOP: its " + str(total) + (" proposal after the first ask is" if total == 1 else " proposals after the first ask are") + " used; make no more payment proposals for " + pid + ", not its floor and not another date, and apply the policy for a product without a promise"
@@ -639,10 +643,13 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
             pending.append(pid + " " + label + ": attempt " + str(k) + ": " + steps[k - 1])
             next_of[pid] = pending[-1]
             text += " -> next proposal for " + pid + ": attempt " + str(k) + ": " + steps[k - 1]
+            later[pid] = ("next proposal for " + pid + ":", "next proposal for " + pid + ", {}:")
         else:
             pending.append(pid + " " + label + ": persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says")
             next_of[pid] = pending[-1]
             text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
+            later[pid] = ("-> next:", "-> next, {}:")
+        line_of[pid] = len(lines)
         lines.append(text + ".")
     # Seen live: told only what not to do, the model filled the gap with an offer of its own. Name the next step.
     propose = "NEXT STEP: your next message makes exactly this proposal and no other: "
@@ -652,11 +659,14 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
              " in this message.") if offered else ""
     order = [pl[0] for pl in plans]
     first_open = [pid for pid in order if pid in first_of]
+    named = None
     if now and pending:
+        named = pending[0].split(" ")[0]
         now.append(propose + pending[0] + "." + waits)
     elif stopped and not pending and not unasked:
         now.append(_closing_step(offered, details))
     elif question and first_open:
+        named = first_open[0]
         now.append("NEXT STEP: the first ask is made and is never asked again. Answer the customer's question in one short sentence"
                    " from the policy or the ACCOUNT FACTS (say so if you do not have that information), then in the same message make"
                    " exactly this proposal and no other: " + first_of[first_open[0]] + ". If what the customer said falls under a policy"
@@ -669,11 +679,20 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
         # A product before it in bank order that nobody has answered for yet comes first; then nothing is named.
         nxt = [pid for pid in order if pid in changed and pid in next_of and pid not in dated]
         if nxt and not any(pid in unasked for pid in order[:order.index(nxt[0])]):
+            named = nxt[0]
             now.append(propose + next_of[nxt[0]] + "." + waits)
         elif changed and not pending and first_open:
+            named = first_open[0]
             # Seen in a chat run: after a product's STOP, a product the first answer left open had no step named.
             now.append(propose + first_of[first_open[0]] + "." + waits + " If the customer disputed " + first_open[0] + " or said it is"
                        " already paid, apply the policy for that instead and propose nothing for it.")
+    if named:
+        # Seen in a chat run: the NEXT STEP named the card, the loan's line named its own next proposal, and the model made
+        # both in one message. The policy goes through the products one by one.
+        for pid, (old, new) in later.items():
+            if pid != named and pid in line_of:
+                lines[line_of[pid]] = lines[line_of[pid]].replace(old, new.format("only after " + named + " is settled and never in the"
+                                                                                  " same message as " + named + "'s"), 1)
     return ("\n".join(now) + ("\n" if now else "")
             + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
             " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
