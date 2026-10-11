@@ -14,7 +14,7 @@ Times are Istanbul time (UTC+3). Briefs open at 20:00, submissions close at 23:0
 1. Put the brief files and the tool API file in a new folder `final/<n>/`, unchanged.
 2. Build it, with no manual step:
    `.venv/bin/python -m builder.build --brief final/<n>/<brief files> --tool-api final/<n>/<api>.json --slot final-<n>`
-   One build takes about a minute; the limit is 30 minutes per run.
+   One build takes about a minute; the limit is 30 minutes per run. Run the builds one after the other: a build started while another runs stops at once ("Another builder process is running").
 3. Each build reads the brief three times in parallel and keeps the read that agrees most with the other two. The `spec_vote` line in the trace lists the fields where the reads differ (`fields_that_differ`). When a decision field differs (deadline, attempts, floor, outcome codes, calendar, identity), run one more build and compare the specs:
    `.venv/bin/python scripts/spec_diff.py <run_id> <run_id>`
    The three reads of one build are in `runs/<run_id>/read-<k>/spec.json` and can be compared the same way.
