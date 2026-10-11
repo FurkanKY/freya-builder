@@ -14,7 +14,7 @@ SNIPPETS = Path(__file__).resolve().parent / "snippets"
 RESERVED = {"customer_id", "first_name", "last_name", "title", "now", "date_facts", "account_facts", "facts_state", "product_count",
             "account_products", "named_day_words", "named_day_facts", "refused_products", "proposed_products", "dated_products", "own_offer_products", "refusal_counts", "plan_state",
             "negotiation_done", "wrap_up_facts", "wrap_up_step", "own_offer_days", "recorded_calls", "named_amount_words", "amount_named",
-            "readback_said", "wrap_up_mode", "wrap_up_say"}
+            "readback_said", "wrap_up_mode", "wrap_up_say", "asked_back", "first_ask_open"}
 
 # With reasoning the phone model sometimes thinks past its budget on multi-product turns and stays silent;
 # without it, date and attempt decisions are moved into code (DATE FACTS, ACCOUNT FACTS, the named-day check).
@@ -275,8 +275,9 @@ def compile_workflow(spec, api, briefs):
     wrap_up_task = "\n\n".join(filter(None, [
         "PHASE: the payment proposals are finished. For a product marked DONE propose no amount and no date. Finish the call in"
         " this order: read back what the customer offered and ask them to confirm it as the policy says; after a clear yes call"
-        " create_promise for that product; call add_note once for each product without a promise, with the reason the policy gives,"
-        " except a product whose line below says it is already done;"
+        " create_promise for that product; for each product without a promise do what the policy prescribes for it (when the policy"
+        " asks for a note, call add_note once for that product with the reason the policy gives), except a product whose line below"
+        " says it is already done;"
         " say what the policy requires after a recorded promise; then say the closing words and call close_call.",
         "NAMED DAY CHECK:\n{{named_day_facts}}",
         "DATE FACTS:\n{{date_facts}}",
@@ -304,7 +305,8 @@ def compile_workflow(spec, api, briefs):
             "description": "The customer's own words for the one exact day they name in their LAST message as a day to pay or as a day"
                            " they ask about, copied as said, for example 'Monday the 26th', 'the thirtieth', '26 October', 'next Friday',"
                            " 'tomorrow'. Empty when the last message names no exact day or only a vague period such as 'next week',"
-                           " 'the week after next', 'end of the month' or 'when my salary comes'."}] + ([{
+                           " 'the week after next', 'end of the month' or 'when my salary comes'. Not a day the customer only says"
+                           " they cannot pay on, such as 'today' in 'I can't pay today'."}] + ([{
             # Attempt counting across products is the step the phone model gets wrong most; code keeps the count.
             "name": "refused_products", "type": "string", "min_confidence": 0.6,
             "description": "The products the customer flatly refuses to pay in their LAST message, as an answer to a question asking"
@@ -323,14 +325,21 @@ def compile_workflow(spec, api, briefs):
                            " reason, 'Go on.' or a request to say it again. 'none' when no payment has been asked yet."}, {
             # A refusal of the agent's answer to the customer's own day or amount is that product's answer to the first ask.
             "name": "dated_products", "type": "string", "min_confidence": 0.5,
-            "description": "The products the customer names a day, a date or an amount to pay for in their LAST message, named with the"
-                           " assistant's own words for them, for example 'credit card'; 'all' when the day or amount is for all of them."
-                           " 'none' when the last message names no day, date or amount to pay."}, {
+            "description": "The products the customer says they can or will pay on a day, a date or with an amount they give in their LAST"
+                           " message, named with the assistant's own words for them, for example 'credit card'; 'all' when the day or"
+                           " amount is for all of them. 'none' when the last message names no day, date or amount to pay, or only"
+                           " mentions or asks about a product, or says they cannot pay it."}, {
             # The closing read-back is a fixed line with the amount owed; an amount of the customer's own turns it off.
             "name": "named_amount_words", "type": "string", "min_confidence": 0.5,
             "description": "An amount of money the customer themselves says they can or will pay in their LAST message, copied as said,"
                            " for example '300', 'two hundred', 'half of it'. 'none' when the last message names no amount of their own:"
-                           " it only accepts, refuses or repeats the assistant's amount, or names only a day."}] if COUNT_CHECK else [])}
+                           " it only accepts, refuses or repeats the assistant's amount, or names only a day."}, {
+            # Seen in a chat run: "why do you need all of them today?" right after the first ask, and the model asked it again.
+            "name": "asked_back", "type": "string", "enum_values": ["yes", "no"], "min_confidence": 0.6,
+            "description": "'yes' when the customer's LAST message only asks the assistant a question, for example 'why do you need"
+                           " that?', 'why today?' or 'which account is this about?', and gives no answer: it refuses nothing, names no"
+                           " day or amount, accepts nothing, mentions no hardship, dispute or payment already made, and is not cut off."
+                           " 'no' otherwise."}] if COUNT_CHECK else [])}
            if DATE_CHECK else {}),
         # Multi-rule date, amount and per-product attempt decisions happen here.
         "reasoning_override": NEGOTIATE_REASONING,
@@ -343,7 +352,12 @@ def compile_workflow(spec, api, briefs):
                 for v, extra in [("named_day_words", [])] + ([("refused_products", [
                     # One product keeps the flow that passes today.
                     {"variable": "product_count", "operator": "not_equals", "operand": "1"}]), ("named_amount_words", [
-                    {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])]}}] if DATE_CHECK else []),
+                    {"variable": "product_count", "operator": "not_equals", "operand": "1"}])] if COUNT_CHECK else [])] + ([{
+                # A question back while the first ask is open: the plan names attempt 1 instead of the first ask again.
+                "logic": "and", "conditions": [
+                    {"variable": "asked_back", "operator": "equals", "operand": "yes"},
+                    {"variable": "first_ask_open", "operator": "equals", "operand": "yes"},
+                    {"variable": "product_count", "operator": "not_equals", "operand": "1"}]}] if COUNT_CHECK else [])}}] if DATE_CHECK else []),
     }
 
     nodes = {

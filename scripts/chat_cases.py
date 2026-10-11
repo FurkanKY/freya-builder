@@ -151,8 +151,9 @@ def run_case(wid, case, style, outdir, tag):
             r["failed"].append("check: " + str(c.get("check")) + " -- " + str(c.get("why"))[:200])
     r["pass"] = not r["failed"]
     tools = [x.get("tool") for x in led.get("calls", [])]
-    # A platform error (5xx, "Agent service error") that cut the call before it closed says nothing about the agent.
-    infra = bool(note) and not r["pass"] and "close_call" not in tools
+    # A platform error (5xx, "Agent service error") says nothing about the agent: it cut the call short, or the server took a
+    # line whose reply timed out and the resent line reached it twice, so the agent and the customer saw different calls.
+    infra = bool(note) and not r["pass"]
     row = {"id": case["key"], "tag": tag, "pass": r["pass"], "infra": infra, "failed": r["failed"], "call_id": call_id,
            "tools": tools, "note": note}
     (outdir / f"{case['key']}-{tag}.txt").write_text("\n".join(lines) + "\n\n" + json.dumps(row, indent=1))

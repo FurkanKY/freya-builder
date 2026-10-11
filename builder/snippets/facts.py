@@ -430,15 +430,17 @@ def _ids(raw, infos):
     return [] if _no_value(raw) else _refused_ids(raw, infos)
 
 
-def _count_refusals(plans, day_named=False, named_date=None):
+def _count_refusals(plans, day_named=False, named_date=None, today_iso=None):
     """Counts, per product, the refused proposals the assistant actually made, then clears the extracted words.
 
     The first ask covers every product once: a product refused in answer to it gets count 1, never more. After that a
     refusal adds one only for the products the assistant last proposed, so a repeated "none of them" during one
     product's proposal does not use up the proposals of products not offered yet. A product first refused after the
     first ask starts at attempt 1, unless the customer had given it a day or an amount of their own: then that refusal
-    is its answer to the first ask. Returns (counts, changed ids, ids the customer gave a day for in this answer).
+    is its answer to the first ask. Returns (counts, changed ids, ids the customer gave a day for in this answer, whether
+    the customer only asked a question back while the first ask to pay every product was still open).
     """
+    asked_back = str(vars.get("asked_back") or "").strip(" .'\"").lower() in ("yes", "true")
     try:
         counts = json.loads(str(vars.get("refusal_counts") or "{}"))
         counts = counts if isinstance(counts, dict) else dict()
@@ -478,9 +480,11 @@ def _count_refusals(plans, day_named=False, named_date=None):
         first_ask = first_open and (not asked or set(asked) == set(all_ids))
         if first_ask and dated_now and set(ids) - set(dated_now):
             ids = [pid for pid in ids if pid not in dated_now]
-        if first_ask and day_named and ids and set(ids) < set(all_ids):
+        if first_ask and day_named and not (named_date and named_date == today_iso) and ids and set(ids) < set(all_ids):
             # "I can pay the card tomorrow, not the loans": the day is for the products not refused, even when the
             # dated_products extraction missed it. Seen live: the closing phase depends on knowing this.
+            # Not today: "I can't pay today, not the card or the loan" refuses the first ask's own day. Seen in a chat run:
+            # today was kept as the car loan's day and read back as the customer's promise.
             for pid in all_ids:
                 if pid not in ids and k_of(pid) == 0 and pid not in own:
                     own.append(pid)
@@ -514,13 +518,19 @@ def _count_refusals(plans, day_named=False, named_date=None):
             if pid not in dated_now and k_of(pid) == 0 and pid not in own:
                 counts[pid] = 1
                 changed.append(pid)
+    # "Why do you need all of them today?" right after the first ask: no answer, so nothing is counted; seen in a chat run,
+    # the model then asked about today again. The plan names attempt 1 instead.
+    question = (asked_back and first_open and bool(asked) and set(asked) == set(all_ids) and not changed and not dated_now
+                and not own)
+    vars["asked_back"] = "no"
+    vars["first_ask_open"] = "no" if question or own or any(int(counts.get(pid) or 0) for pid in all_ids) else "yes"
     vars["refused_products"] = "none"
     vars["proposed_products"] = "none"
     vars["dated_products"] = "none"
     vars["own_offer_products"] = json.dumps(own)
     vars["own_offer_days"] = json.dumps(days_of, sort_keys=True)
     vars["refusal_counts"] = json.dumps(counts, sort_keys=True)
-    return counts, changed, dated_now
+    return counts, changed, dated_now, question
 
 
 def _var(key):
@@ -577,13 +587,14 @@ def _total(plan):
     return len(steps) if steps else (allowed if allowed is not None else 99)
 
 
-def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, day_named=False, dated=()):
+def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, day_named=False, dated=(), question=False):
     recorded = recorded or dict()
     lines = []
     next_of = dict()
+    first_of = dict()
     now = []
     pending, unasked, stopped, offered = [], [], [], []
-    first_done = bool(own) or any(int(counts.get(pl[0]) or 0) for pl in plans)
+    first_done = bool(own) or question or any(int(counts.get(pl[0]) or 0) for pl in plans)
     for pid, label, steps, allowed, _, floor in plans:
         k = int(counts.get(pid) or 0)
         text = pid + " " + label + ": refused " + str(k) + (" time" if k == 1 else " times")
@@ -592,7 +603,8 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
             text += "; its promise is already recorded in this call: do not read it back or record it again"
         elif k == 0 and pid in own:
             offered.append(pid + " " + label)
-            text += "; the customer gave a day or an amount for it: handle that under the date and amount rules; its plan starts only if the customer then refuses"
+            text += ("; the customer gave a day or an amount for it: handle that under the date and amount rules; its plan starts only"
+                     " if the customer then refuses; its read-back comes once no product has a proposal left")
         elif k == 0:
             unasked.append(pid)
             text += "; nothing refused yet"
@@ -600,6 +612,7 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
                 # "Not the card or the loan, but we can talk about the car loan": the first ask covered the car loan too.
                 # Seen in a chat run: the model asked it again for the car loan alone. Its answer may still be a day of
                 # the customer's own, so it is not counted; the line names the proposal that comes instead.
+                first_of[pid] = pid + " " + label + ": attempt 1: " + (steps[0] if steps else "persuasion attempt 1 as the policy says")
                 text += ("; the first ask already covered it, so do not ask it again for " + pid + ". Unless the customer"
                          " gives a day or an amount for it, its next proposal is attempt 1: "
                          + (steps[0] if steps else "persuasion attempt 1 as the policy says"))
@@ -623,19 +636,32 @@ def _plan_state(plans, counts, changed=(), own=(), details=None, recorded=None, 
             text += " -> next: persuasion attempt " + str(k) + (" of " + str(total) if total is not None else "") + " as the policy says"
         lines.append(text + ".")
     # Seen live: told only what not to do, the model filled the gap with an offer of its own. Name the next step.
+    propose = "NEXT STEP: your next message makes exactly this proposal and no other: "
+    # Seen in a chat run: the customer refused one product and gave a day for another in one answer; the model read back
+    # that day instead of making the named proposal. All promises are read back together at the end.
+    waits = (" The day the customer gave for " + " and ".join(offered) + " waits: no read-back and no confirmation question for it"
+             " in this message.") if offered else ""
+    order = [pl[0] for pl in plans]
+    first_open = [pid for pid in order if pid in first_of]
     if now and pending:
-        now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + pending[0] + ".")
+        now.append(propose + pending[0] + "." + waits)
     elif stopped and not pending and not unasked:
         now.append(_closing_step(offered, details))
+    elif question and first_open:
+        now.append("NEXT STEP: the first ask is made and is never asked again. Answer the customer's question in one short sentence"
+                   " from the policy or the ACCOUNT FACTS (say so if you do not have that information), then in the same message make"
+                   " exactly this proposal and no other: " + first_of[first_open[0]] + ".")
     elif not (day_named and not dated):
         # A refusal was just counted: one product at a time, in bank order. Seen live: with two products refused
         # together, the model proposed to both in one message and gave the one-attempt product a second proposal.
         # Not when the customer gave a day in the same answer without naming a product: that day is checked first.
         # A product before it in bank order that nobody has answered for yet comes first; then nothing is named.
-        order = [pl[0] for pl in plans]
         nxt = [pid for pid in order if pid in changed and pid in next_of and pid not in dated]
         if nxt and not any(pid in unasked for pid in order[:order.index(nxt[0])]):
-            now.append("NEXT STEP: your next message makes exactly this proposal and no other: " + next_of[nxt[0]] + ".")
+            now.append(propose + next_of[nxt[0]] + "." + waits)
+        elif changed and not pending and first_open:
+            # Seen in a chat run: after a product's STOP, a product the first answer left open had no step named.
+            now.append(propose + first_of[first_open[0]] + "." + waits)
     return ("\n".join(now) + ("\n" if now else "")
             + "Refusals counted by code from the customer's answers: the first ask counts once for each product refused in answer to it,"
             " then each proposal the assistant made for a product and the customer flatly refused or evaded counts once for that product."
@@ -846,7 +872,9 @@ def run():
         resolved = []
     named_date = resolved[0].isoformat() if len(resolved) == 1 else None
     count = len(rows)
-    counts, changed, dated_now = _count_refusals(plans, day_named, named_date)
+    counts, changed, dated_now, question = _count_refusals(plans, day_named, named_date, today.isoformat())
+    # "I can't pay today" answers the first ask: today is not a day of the customer's own that is checked first.
+    day_offered = day_named and named_date != today.isoformat()
     own = json.loads(vars.get("own_offer_products") or "[]")
     # A finished product's deadline is no date to work with any more. Seen live: the band line and the calendar still named
     # it after its last proposal, and the model offered that product its floor on that date.
@@ -892,7 +920,7 @@ def run():
             settled.append(pid)
         details[pid + " " + label] = text
     # One product keeps the flow that passes today: the model counts its own plan.
-    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded, day_named, dated_now) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
+    vars["plan_state"] = _plan_state(plans, counts, changed, own, details, recorded, day_offered, dated_now, question) if len(plans) > 1 else "One product: follow its PERSUASION PLAN and count the proposals yourself."
     done, wrap, step = _wrap_up(plans, counts, settled, owed, details, recorded) if len(plans) > 1 else (False, "", "")
     prev_done = str(vars.get("negotiation_done") or "")
     if _amount_named(vars.get("named_amount_words")):
