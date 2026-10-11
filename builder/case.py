@@ -36,6 +36,7 @@ CONTRACT_SCHEMA = """Return exactly this shape:
            "schedule_callback": "<the operation that books a callback>",
            "transfer_to_agent": "<the operation that hands the call to a person or another team>",
            "close_call": "<the operation that records the call's result or outcome code at the end>"},
+ "call_kind": "inbound_service | outbound_collection (who calls whom and what the call is for, as the brief says)",
  "notes": "<one paragraph: what a builder must know about calling these services: required headers, identifiers, date, time and amount formats, error codes and what they mean>"
 }
 Rules:
@@ -181,6 +182,19 @@ def point_at(api, mock_url):
     return api
 
 
+def call_mode(call_kind, roles):
+    """The call kind the read names decides: inbound is a service call, outbound or collection the collection agent (which
+    also runs without a promise tool), service a service call. Only a read with no call kind falls back on the promise tool."""
+    kind = str(call_kind or "").lower()
+    if re.search(r"inbound", kind):
+        return "service"
+    if re.search(r"outbound|collection", kind):
+        return "collection"
+    if re.search(r"service", kind):
+        return "service"
+    return "collection" if (roles or {}).get("create_promise") else "service"
+
+
 async def read_case(paths, mock_url, work_dir, ask, trace):
     """The builder's inputs from a case folder. ask(prompt, purpose, system) is the model call."""
     documents, skipped = collect(paths, work_dir)
@@ -222,8 +236,9 @@ async def read_case(paths, mock_url, work_dir, ask, trace):
     policy = [d for d in briefs if marks.get(d["path"], {}).get("agent_needs") is True] or briefs
     # The operations no role maps are the agent's extra tools, under the names apply_roles gave them.
     extra = {api["paths"][p][m]["operationId"]: f"{m.upper()} {p}" for p, m in operations(api) if api["paths"][p][m].get("operationId") not in ROLES}
-    trace.emit("case_read", roles=roles, unmapped_operations=list(extra.values()), extra_tools=extra, agent_documents=[d["path"] for d in policy],
+    mode = call_mode(data.get("call_kind"), roles)
+    trace.emit("case_read", mode=mode, call_kind=data.get("call_kind"), roles=roles, unmapped_operations=list(extra.values()), extra_tools=extra, agent_documents=[d["path"] for d in policy],
                tool_server=api["servers"][0]["url"], notes=str(data.get("notes") or "")[:600])
     (work_dir / "openapi.json").write_text(json.dumps(api, ensure_ascii=False, indent=1))
     return {"briefs": briefs, "policy": policy, "api": api, "roles": roles, "extra_tools": extra, "contract_notes": str(data.get("notes") or ""),
-            "skipped": skipped, "fingerprint": digest({"briefs": briefs, "api": api})}
+            "mode": mode, "skipped": skipped, "fingerprint": digest({"briefs": briefs, "api": api})}

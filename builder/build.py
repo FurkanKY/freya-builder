@@ -18,6 +18,7 @@ from dotenv import dotenv_values
 from .runtime import Budget, Trace, digest, load_inputs, validate_workflow, write_json, select_candidate, walk
 from .generate import ask_model, generate, generate_consensus
 from .case import point_at, read_case
+from .service import generate_service
 from .freya_client import Client
 from .evaluate import assert_public_suite, run_evaluation, transcript_digest
 
@@ -67,7 +68,7 @@ def reads_wanted(value):
 async def execute(a):
     budget=Budget(a.seconds)
     env={k:v for k,v in dotenv_values(ROOT/".env").items() if v is not None}
-    for key in ("FREYA_API_KEY","FREYA_BANK_TEAM_KEY","FREYA_WORKSPACE_ID","FREYA_API_URL","BUILDER_MODEL","BUILDER_READS"):
+    for key in ("FREYA_API_KEY","FREYA_BANK_TEAM_KEY","FREYA_WORKSPACE_ID","FREYA_API_URL","BUILDER_MODEL","BUILDER_READS","BUILDER_MODE"):
         if os.environ.get(key): env[key]=os.environ[key]
     if not env.get("FREYA_API_KEY"): raise ValueError("Set FREYA_API_KEY in project .env")
     if a.suite and len(env.get("FREYA_BANK_TEAM_KEY", ""))<16: raise ValueError("Practice team key must contain at least 16 characters")
@@ -95,16 +96,25 @@ async def execute(a):
             work=run_dir/"case"; work.mkdir()
             ask=lambda prompt,purpose,system: ask_model(prompt,trace,model,work,purpose,budget,timeout=600,system=system)
             inputs=await read_case(a.case,a.mock_url,work,ask,trace)
+        # BUILDER_MODE=service|collection overrides the mode the case read chose.
+        if env.get("BUILDER_MODE") in ("service","collection") and env["BUILDER_MODE"]!=inputs.get("mode"):
+            trace.emit("mode_override",mode=env["BUILDER_MODE"],read_mode=inputs.get("mode"))
+            inputs["mode"]=env["BUILDER_MODE"]
+        service=inputs.get("mode")=="service"
         write_json(run_dir/"inputs.json",inputs)
         # One slot per case: later runs on the same documents update that workflow instead of adding one.
         slot=a.slot or ("case-"+digest([d["sha256"] for d in inputs["briefs"]])[:12] if a.case else inputs["fingerprint"][:12])
-        candidate=await generate_consensus(inputs,KIT,budget,trace,model,run_dir,reads=reads_wanted(env.get("BUILDER_READS")))
+        if service:
+            candidate=await generate_service(inputs,KIT,budget,trace,model,run_dir)
+        else:
+            candidate=await generate_consensus(inputs,KIT,budget,trace,model,run_dir,reads=reads_wanted(env.get("BUILDER_READS")))
         for attempt in range(2):
             errors=validate_workflow(candidate["workflow"],inputs["api"])
             if not errors: break
             trace.emit("validation_failed",errors=errors)
-            if attempt==1:
+            if attempt==1 or service:
                 # The platform dry run below is the final arbiter; a local check alone never discards the only candidate.
+                # The collection repair read does not fit a service spec.
                 trace.emit("validation_still_failed",errors=errors,action="platform dry run decides"); break
             try:
                 candidate=await generate(inputs,KIT,budget,trace,model,run_dir,previous=candidate,feedback={"structural_errors":errors})
