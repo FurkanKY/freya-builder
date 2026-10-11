@@ -389,3 +389,19 @@ def test_a_plan_step_on_the_nth_business_day():
     out = _facts(spec, [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "days_late": band["min"], "past_due": 365}],
                  now="2026-10-16T10:00:00")
     assert "attempt 1: 365 by 2026-10-20 (Tuesday, 20 October 2026)" in out, out
+
+
+def test_the_calendar_stops_after_six_weeks_and_a_later_day_is_still_checked():
+    # The code node gets at most 128 KB of code and call data together; a fixed deadline at the year's end would give a
+    # calendar line for each of 70 days.
+    spec = json.loads(json.dumps(SPEC))
+    band = spec["account"]["bands"][0]
+    band["deadline"] = {"type": "fixed_date", "count": 0, "date": "2026-12-31"}
+    wf = compile_workflow(spec, API, BRIEFS)
+    code = wf["nodes"]["check_date"]["pre_actions"][0]["function"]["parameters"]["properties"]["code"]["default"]
+    variables = {"now": "2026-10-21T09:00", "named_day_words": "15 December", "account_products": json.dumps(
+        [{"product_id": "p1", "type": "credit_card", "card_last4": "1234", "days_late": band["min"], "past_due": 365}])}
+    exec(compile(code, "facts", "exec"), {"vars": variables})
+    calendar = variables["date_facts"].split("Calendar, one line per day from today.")[1]
+    assert "\n2026-12-05 " in calendar and "\n2026-12-06 " not in calendar
+    assert "2026-12-15" in variables["named_day_facts"] and "business day" in variables["named_day_facts"], variables["named_day_facts"]

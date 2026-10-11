@@ -1229,6 +1229,9 @@ def run():
         lines = [l for l in lines if not l.startswith("Deadlines computed from today")]
     days = []
     d = today
+    # The code node gets at most 128 KB of code and call data together, and this calendar is part of the data: it stops after
+    # about six weeks. A day named later than that still gets its NAMED DAY CHECK.
+    far = min(far, today + datetime.timedelta(days=38))
     while d <= far + datetime.timedelta(days=7):
         days.append(_day_line(d, today, workdays, holidays, open_deadlines))
         d = d + datetime.timedelta(days=1)
